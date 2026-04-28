@@ -1,0 +1,105 @@
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+
+// Default demo videos to show on first run
+const DEMO_VIDEOS = [
+  {
+    id: 'demo-1',
+    title: '欢迎使用 NanoSwipe 🎬',
+    url: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+    cover: '',
+    source: 'custom',
+    sourceName: '演示内容',
+    desc: '向上滑动切换视频，在设置中添加你的视频源',
+    type: 'hls',
+  },
+  {
+    id: 'demo-2',
+    title: 'Big Buck Bunny',
+    url: 'https://test-streams.mux.dev/test_001/stream.m3u8',
+    cover: 'https://peach.blender.org/wp-content/uploads/title_anouncement.jpg?x11217',
+    source: 'custom',
+    sourceName: '演示内容',
+    desc: '经典开源动画片段',
+    type: 'hls',
+  },
+]
+
+export const useSourceStore = defineStore('source', () => {
+  // MoonTV config
+  const moontvUrl = ref(localStorage.getItem('moontvUrl') || 'https://tv.gaoningguo.eu.org')
+  const moontvToken = ref(localStorage.getItem('moontvToken') || '')
+  const moontvEnabled = ref(localStorage.getItem('moontvEnabled') === 'true')
+
+  // Custom videos list (stored as JSON)
+  const customVideos = ref(JSON.parse(localStorage.getItem('customVideos') || 'null') || DEMO_VIDEOS)
+
+  // Active source type: 'custom' | 'moontv'
+  const activeSource = ref(localStorage.getItem('activeSource') || 'custom')
+
+  // Source name labels
+  const sourceName = computed(() => {
+    if (activeSource.value === 'moontv') return 'MoonTVPlus'
+    return '自定义视频'
+  })
+
+  function saveMoontvConfig(url, token) {
+    moontvUrl.value = url
+    moontvToken.value = token
+    moontvEnabled.value = true
+    localStorage.setItem('moontvUrl', url)
+    localStorage.setItem('moontvToken', token)
+    localStorage.setItem('moontvEnabled', 'true')
+  }
+
+  function clearMoontvToken() {
+    moontvToken.value = ''
+    moontvEnabled.value = false
+    localStorage.removeItem('moontvToken')
+    localStorage.setItem('moontvEnabled', 'false')
+  }
+
+  function setActiveSource(src) {
+    activeSource.value = src
+    localStorage.setItem('activeSource', src)
+  }
+
+  function addCustomVideo(video) {
+    const v = {
+      id: 'custom-' + Date.now(),
+      title: video.title || '未命名视频',
+      url: video.url,
+      cover: video.cover || '',
+      source: 'custom',
+      sourceName: '自定义',
+      desc: video.desc || '',
+      type: video.url.includes('.m3u8') ? 'hls' : 'mp4',
+    }
+    customVideos.value.unshift(v)
+    _saveCustomVideos()
+    return v
+  }
+
+  function removeCustomVideo(id) {
+    customVideos.value = customVideos.value.filter(v => v.id !== id)
+    _saveCustomVideos()
+  }
+
+  function _saveCustomVideos() {
+    localStorage.setItem('customVideos', JSON.stringify(customVideos.value))
+  }
+
+  return {
+    moontvUrl,
+    moontvToken,
+    moontvEnabled,
+    customVideos,
+    activeSource,
+    sourceName,
+    saveMoontvConfig,
+    clearMoontvToken,
+    setActiveSource,
+    addCustomVideo,
+    removeCustomVideo,
+  }
+})

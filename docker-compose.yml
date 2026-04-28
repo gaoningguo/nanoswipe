@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  nanoswipe:
+    build: .
+    container_name: nanoswipe
+    ports:
+      - "3333:80"
+    environment:
+      # You can change the MoonTV backend URL here
+      - MOONTV_URL=https://tv.gaoningguo.eu.org
+    restart: unless-stopped
