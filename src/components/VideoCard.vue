@@ -42,6 +42,11 @@
         <p v-if="autoSkipCountdown > 0" class="skip-countdown">{{ autoSkipCountdown }}s 后自动跳过...</p>
         <div class="error-btns">
           <button class="ns-btn ns-btn-ghost retry-btn" @click="retry">重试</button>
+          <button 
+            v-if="video.playbacks?.length > 1"
+            class="ns-btn ns-btn-ghost retry-btn" 
+            @click="tryAutoSwitchSource"
+          >换源</button>
           <button class="ns-btn ns-btn-primary retry-btn" @click="playerStore.next()">跳过</button>
         </div>
       </div>
@@ -80,6 +85,20 @@
             </span>
           </div>
         </div>
+
+        <!-- Playback Source selector for MoonTV -->
+        <div class="episode-row" v-if="video.playbacks?.length > 1">
+          <span class="ep-label">线路：</span>
+          <div class="ep-list">
+            <button
+              v-for="(pb, i) in video.playbacks"
+              :key="i"
+              class="ep-btn"
+              :class="{ active: video.currentPlaybackIdx === i }"
+              @click.stop="tryManualSwitchSource(i)"
+            >{{ pb.name }}</button>
+          </div>
+        </div>
       </div>
 
       <!-- Progress bar -->
@@ -110,6 +129,7 @@ import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { usePlayerStore } from '../stores/player.js'
 import { useSourceStore } from '../stores/source.js'
 import { HlsPlayer } from '../services/hlsPlayer.js'
+import { historyService } from '../services/historyService.js'
 
 const props = defineProps({
   video: { type: Object, required: true },
@@ -187,7 +207,19 @@ async function loadAndPlay() {
   }
 
   try {
+    // Check if URL is still valid or need proxy refresh?
+    // In MoonTVPlus, sometimes we might want to use a proxy for certain sources.
+    // The current resolveVideoUrl and resolvePlayUrl already handle proxyMode.
+    
     await hlsPlayer.load(url, props.video.type || 'auto')
+    
+    // Resume from last position
+    const progress = await historyService.getProgress(props.video.id)
+    if (progress && progress.currentTime > 0 && !progress.isFinished) {
+      console.log(`[Playback] Resuming ${props.video.title} from ${progress.currentTime}s`)
+      videoRef.value.currentTime = progress.currentTime
+    }
+
     await hlsPlayer.play()
     isPlaying.value = true
     showCover.value = false
@@ -201,14 +233,6 @@ async function loadAndPlay() {
 }
 
 function _startAutoSkip() {
-  autoSkipCountdown.value = 4
-  autoSkipTimer = setInterval(() => {
-    autoSkipCountdown.value--
-    if (autoSkipCountdown.value <= 0) {
-      clearInterval(autoSkipTimer)
-      if (playerStore.hasNext) playerStore.next()
-    }
-  }, 1000)
 }
 
 function togglePlay() {
@@ -233,12 +257,22 @@ function flashPlayIndicator() {
 
 function onTimeUpdate() {
   const dur = hlsPlayer?.duration || 0
+  const cur = hlsPlayer?.currentTime || 0
   if (dur > 0) {
-    progressPct.value = (hlsPlayer.currentTime / dur) * 100
+    progressPct.value = (cur / dur) * 100
+    // Save progress periodically (every 5 seconds)
+    if (props.isActive && Math.floor(cur) % 5 === 0) {
+      historyService.saveProgress(props.video, cur, dur)
+    }
   }
 }
 
 function onEnded() {
+  const dur = hlsPlayer?.duration || 0
+  if (dur > 0) {
+    // Mark as finished
+    historyService.saveProgress(props.video, dur, dur)
+  }
   if (!playerStore.isLooping) {
     emit('ended')
   }
@@ -305,6 +339,28 @@ async function switchEpisode(idx) {
   if (sourceStore.moontvUrl) {
     hlsPlayer.setMoontvOrigin(sourceStore.moontvUrl)
   }
+  await loadAndPlay()
+}
+
+async function tryAutoSwitchSource() {
+  const video = props.video
+  if (!video.playbacks || video.playbacks.length <= 1) return
+  
+  let nextIdx = (video.currentPlaybackIdx || 0) + 1
+  if (nextIdx >= video.playbacks.length) {
+    nextIdx = 0 // Wrap around or stop? User might want to cycle
+  }
+  
+  if (nextIdx === (video.currentPlaybackIdx || 0)) return // Only one source or cycled back
+  
+  await playerStore.switchPlayback(video, nextIdx)
+  await loadAndPlay()
+}
+
+async function tryManualSwitchSource(idx) {
+  const video = props.video
+  if (video.currentPlaybackIdx === idx) return
+  await playerStore.switchPlayback(video, idx)
   await loadAndPlay()
 }
 

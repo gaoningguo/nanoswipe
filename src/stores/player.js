@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useSourceStore } from './source.js'
 import { moontvApi } from '../services/moontvApi.js'
+import { historyService } from '../services/historyService.js'
 
 export const usePlayerStore = defineStore('player', () => {
   const sourceStore = useSourceStore()
@@ -37,7 +38,11 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function loadMoontvRecommend(page = 1) {
-    const results = await moontvApi.recommend(sourceStore.moontvUrl, sourceStore.moontvToken, page)
+    let results = await moontvApi.recommend(sourceStore.moontvUrl, sourceStore.moontvToken, page)
+    
+    // Randomize results
+    results = results.sort(() => Math.random() - 0.5)
+
     const videos = results.map(item => ({
       id: `moontv-${item.source}-${item.id}`,
       title: item.title,
@@ -51,11 +56,27 @@ export const usePlayerStore = defineStore('player', () => {
       moontvSource: item.source,
       type: 'hls',
     }))
+
+    // Filter out finished videos
+    const filteredVideos = []
+    for (const v of videos) {
+      const finished = await historyService.isFinished(v.id)
+      if (!finished) {
+        filteredVideos.push(v)
+      }
+    }
+
     if (page === 1) {
-      queue.value = videos
+      // If randomization filtered out too many, try to load more immediately? 
+      // For now, just set what we have.
+      queue.value = filteredVideos
       currentIndex.value = 0
+      
+      if (queue.value.length < 5 && results.length > 0) {
+        _appendMore()
+      }
     } else {
-      queue.value.push(...videos)
+      queue.value.push(...filteredVideos)
     }
   }
 
@@ -105,13 +126,31 @@ export const usePlayerStore = defineStore('player', () => {
       const playback = detail?.playbacks?.[0]
       const episodes = detail?.episodes || playback?.episodes || []
       const episodeTitles = detail?.episodes_titles || detail?.episodeTitles || playback?.episodes_titles || playback?.episodeTitles || []
+      const playbacks = (detail?.playbacks || []).map(p => ({
+        name: p.name || '默认线路',
+        episodes: p.episodes || [],
+        episodeTitles: p.episodeTitles || p.episodes_titles || []
+      }))
+
+      // Fallback if playbacks is empty but episodes exist
+      if (playbacks.length === 0 && episodes.length > 0) {
+        playbacks.push({
+          name: '默认线路',
+          episodes,
+          episodeTitles
+        })
+      }
+
       const proxyMode = detail?.proxyMode === true
 
-      // Get first episode URL
-      const firstEp = episodes[0]
+      // Get first playback and its first episode URL
+      const currentPlaybackIdx = 0
+      const currentPlayback = playbacks[currentPlaybackIdx]
+      const currentEpisodes = currentPlayback?.episodes || []
+      const firstEp = currentEpisodes[0]
       let epUrl = typeof firstEp === 'string' ? firstEp : firstEp?.playUrl || firstEp?.url
 
-      let finalUrl = epUrl
+      let finalUrl = null
 
       if (epUrl) {
         finalUrl = await moontvApi.resolvePlayUrl(
@@ -129,10 +168,12 @@ export const usePlayerStore = defineStore('player', () => {
           queue.value[idx].url = finalUrl
           queue.value[idx].rawEpisodeUrl = epUrl   // keep raw for episode switching
           queue.value[idx].proxyMode = proxyMode
-          queue.value[idx].episodes = episodes
-          queue.value[idx].episodeTitles = episodeTitles
+          queue.value[idx].episodes = currentEpisodes
+          queue.value[idx].episodeTitles = currentPlayback?.episodeTitles || []
           queue.value[idx].currentEpisode = 0
           queue.value[idx].moontvSource = video.moontvSource
+          queue.value[idx].playbacks = playbacks
+          queue.value[idx].currentPlaybackIdx = currentPlaybackIdx
         }
       }
 
@@ -175,9 +216,50 @@ export const usePlayerStore = defineStore('player', () => {
       moontvSource: item.source,
       type: 'hls',
     }
+    // Check if finished
+    const finished = await historyService.isFinished(video.id)
+    if (finished) {
+      // If user explicitly clicks a search result that was finished, 
+      // maybe we should let them play it anyway?
+      // The requirement says "already finished not added to queue".
+      // But for manual search, it's better to allow it.
+      // However, to follow the requirement strictly, I should skip it.
+      // Actually, "首页每次加载的视频随机，已经看完不在往队列中加" likely refers to the recommendation queue.
+    }
+    
     // Insert at current position + 1
     queue.value.splice(currentIndex.value + 1, 0, video)
     currentIndex.value++
+  }
+
+  async function playAllSearchResults() {
+    if (searchResults.value.length === 0) return
+    const videos = searchResults.value.map(item => ({
+      id: `moontv-${item.source}-${item.id}`,
+      title: item.title,
+      url: null,
+      cover: item.poster || '',
+      source: 'moontv',
+      sourceName: item.source_name || 'MoonTV',
+      desc: item.desc || '',
+      year: item.year || '',
+      moontvId: item.id,
+      moontvSource: item.source,
+      type: 'hls',
+    }))
+    
+    // Filter finished for "Play All"
+    const filtered = []
+    for (const v of videos) {
+      if (!(await historyService.isFinished(v.id))) {
+        filtered.push(v)
+      }
+    }
+    
+    if (filtered.length > 0) {
+      queue.value = filtered
+      currentIndex.value = 0
+    }
   }
 
   function loadCustomVideos() {
@@ -190,6 +272,43 @@ export const usePlayerStore = defineStore('player', () => {
     if (sourceStore.activeSource !== 'moontv') return
     const page = Math.ceil(queue.value.length / 20) + 1
     await loadMoontvRecommend(page)
+  }
+
+  async function switchPlayback(video, playbackIdx) {
+    if (!video.playbacks || !video.playbacks[playbackIdx]) return null
+    
+    try {
+      const playback = video.playbacks[playbackIdx]
+      const episodes = playback.episodes || []
+      const episodeIdx = Math.min(video.currentEpisode || 0, episodes.length - 1)
+      const ep = episodes[episodeIdx]
+      const epUrl = typeof ep === 'string' ? ep : ep?.playUrl || ep?.url
+      
+      if (!epUrl) return null
+
+      const finalUrl = await moontvApi.resolvePlayUrl(
+        sourceStore.moontvUrl,
+        sourceStore.moontvToken,
+        epUrl,
+        video.moontvSource,
+        episodeIdx,
+        video.proxyMode
+      )
+
+      const idx = queue.value.findIndex(v => v.id === video.id)
+      if (idx !== -1) {
+        queue.value[idx].url = finalUrl
+        queue.value[idx].rawEpisodeUrl = epUrl
+        queue.value[idx].episodes = episodes
+        queue.value[idx].episodeTitles = playback.episodeTitles || []
+        queue.value[idx].currentPlaybackIdx = playbackIdx
+        queue.value[idx].currentEpisode = episodeIdx
+      }
+      return finalUrl
+    } catch (e) {
+      console.error('[switchPlayback failed]', e)
+      return null
+    }
   }
 
   return {
@@ -212,7 +331,9 @@ export const usePlayerStore = defineStore('player', () => {
     toggleMute,
     toggleLoop,
     resolveVideoUrl,
+    switchPlayback,
     search,
     playSearchResult,
+    playAllSearchResults,
   }
 })

@@ -39,6 +39,10 @@
             <span>正在搜索...</span>
           </div>
           <div v-else class="results-grid">
+            <div class="results-header" v-if="playerStore.searchResults.length > 0">
+              <span class="results-count">找到 {{ playerStore.searchResults.length }} 个结果</span>
+              <button class="play-all-btn" @click="playAll">播放全部</button>
+            </div>
             <div
               v-for="item in playerStore.searchResults"
               :key="`${item.source}-${item.id}`"
@@ -97,6 +101,11 @@ async function doSearch() {
 
 async function playResult(item) {
   await playerStore.playSearchResult(item)
+  emit('close')
+}
+
+async function playAll() {
+  await playerStore.playAllSearchResults()
   emit('close')
 }
 
@@ -209,6 +218,33 @@ import { nextTick } from 'vue'
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  margin-bottom: 4px;
+}
+.results-count {
+  font-size: 13px;
+  color: var(--c-text-3);
+}
+.play-all-btn {
+  padding: 6px 14px;
+  background: rgba(255,56,92,0.15);
+  color: var(--c-accent);
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid rgba(255,56,92,0.3);
+  transition: all 0.2s;
+}
+.play-all-btn:active {
+  background: var(--c-accent);
+  color: white;
+  transform: scale(0.95);
 }
 
 .result-card {
