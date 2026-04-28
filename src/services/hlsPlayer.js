@@ -65,10 +65,15 @@ export class HlsPlayer {
       this.hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
-        backBufferLength: 30,
-        maxBufferLength: 60,
+        backBufferLength: 60,
+        maxBufferLength: 120,
+        maxMaxBufferLength: 300,
+        maxBufferSize: 60 * 1024 * 1024, // 60MB
+        maxBufferHole: 0.5,
+        manuallyPaused: false,
         startLevel: -1,    // auto quality
-        abrEwmaDefaultEstimate: 500000,
+        abrEwmaDefaultEstimate: 2000000, // 2Mbps initial estimate for faster start
+        testBandwidth: false,
         // Rewrite MoonTV-domain requests to go through the local Vite proxy
         xhrSetup: (xhr, requestUrl) => {
           if (moontvOrigin && requestUrl.startsWith(moontvOrigin)) {

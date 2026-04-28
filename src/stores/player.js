@@ -75,6 +75,7 @@ export const usePlayerStore = defineStore('player', () => {
       if (queue.value.length < 5 && results.length > 0) {
         _appendMore()
       }
+      _preloadNextUrl()
     } else {
       queue.value.push(...filteredVideos)
     }
@@ -86,6 +87,18 @@ export const usePlayerStore = defineStore('player', () => {
       // Preload more when near end
       if (currentIndex.value >= queue.value.length - 3) {
         _appendMore()
+      }
+      // Pre-resolve next video's URL
+      _preloadNextUrl()
+    }
+  }
+
+  function _preloadNextUrl() {
+    const nextIdx = currentIndex.value + 1
+    if (nextIdx < queue.value.length) {
+      const nextVideo = queue.value[nextIdx]
+      if (!nextVideo.url && nextVideo.source === 'moontv') {
+        resolveVideoUrl(nextVideo).catch(() => {})
       }
     }
   }

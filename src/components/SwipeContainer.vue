@@ -21,6 +21,7 @@
           v-if="video"
           :video="video"
           :isActive="slotIdx === 1"
+          :isNear="slotIdx === 0 || slotIdx === 2"
           @ended="onVideoEnded"
         />
         <div v-else class="swipe-slot-empty" />

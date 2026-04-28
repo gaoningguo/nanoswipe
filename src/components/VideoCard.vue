@@ -12,7 +12,7 @@
       playsinline
       webkit-playsinline
       x5-playsinline
-      preload="metadata"
+      :preload="isActive || isNear ? 'auto' : 'metadata'"
       @timeupdate="onTimeUpdate"
       @ended="onEnded"
       @waiting="onWaiting"
@@ -134,6 +134,7 @@ import { historyService } from '../services/historyService.js'
 const props = defineProps({
   video: { type: Object, required: true },
   isActive: { type: Boolean, default: false },
+  isNear: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['ended'])
@@ -168,9 +169,9 @@ onUnmounted(() => {
   clearInterval(autoSkipTimer)
 })
 
-// --- Watch active state ---
-watch(() => props.isActive, async (active) => {
-  if (active) {
+// --- Watch active or near state ---
+watch(() => [props.isActive, props.isNear], async ([active, near]) => {
+  if (active || near) {
     await loadAndPlay()
   } else {
     hlsPlayer?.pause()
@@ -187,7 +188,11 @@ async function loadAndPlay() {
   videoError.value = false
   autoSkipCountdown.value = 0
   clearInterval(autoSkipTimer)
-  isBuffering.value = true
+  
+  if (props.isActive) {
+    isBuffering.value = true
+  }
+  
   showCover.value = true
 
   // Ensure HLS player knows about the MoonTV origin for CORS proxy
@@ -200,9 +205,11 @@ async function loadAndPlay() {
     url = await playerStore.resolveVideoUrl(props.video)
   }
   if (!url) {
-    isBuffering.value = false
-    videoError.value = true
-    _startAutoSkip()
+    if (props.isActive) {
+      isBuffering.value = false
+      videoError.value = true
+      _startAutoSkip()
+    }
     return
   }
 
@@ -213,22 +220,31 @@ async function loadAndPlay() {
     
     await hlsPlayer.load(url, props.video.type || 'auto')
     
-    // Resume from last position
-    const progress = await historyService.getProgress(props.video.id)
-    if (progress && progress.currentTime > 0 && !progress.isFinished) {
-      console.log(`[Playback] Resuming ${props.video.title} from ${progress.currentTime}s`)
-      videoRef.value.currentTime = progress.currentTime
-    }
+    // Resume from last position (only if active)
+    if (props.isActive) {
+      const progress = await historyService.getProgress(props.video.id)
+      if (progress && progress.currentTime > 0 && !progress.isFinished) {
+        console.log(`[Playback] Resuming ${props.video.title} from ${progress.currentTime}s`)
+        videoRef.value.currentTime = progress.currentTime
+      }
 
-    await hlsPlayer.play()
-    isPlaying.value = true
-    showCover.value = false
+      await hlsPlayer.play()
+      isPlaying.value = true
+      showCover.value = false
+    } else {
+      // Just preload, don't play
+      hlsPlayer.pause()
+    }
   } catch (e) {
     console.error('Playback error:', e)
-    videoError.value = true
-    _startAutoSkip()
+    if (props.isActive) {
+      videoError.value = true
+      _startAutoSkip()
+    }
   } finally {
-    isBuffering.value = false
+    if (props.isActive) {
+      isBuffering.value = false
+    }
   }
 }
 
