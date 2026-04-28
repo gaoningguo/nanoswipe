@@ -3,23 +3,8 @@
     class="video-card"
     :class="{ active: isActive }"
   >
-    <!-- Video element -->
-    <video
-      ref="videoRef"
-      class="video-el"
-      :muted="playerStore.isMuted"
-      :loop="playerStore.isLooping"
-      playsinline
-      webkit-playsinline
-      x5-playsinline
-      :preload="isActive || isNear ? 'auto' : 'metadata'"
-      @timeupdate="onTimeUpdate"
-      @ended="onEnded"
-      @waiting="onWaiting"
-      @canplay="onCanPlay"
-      @error="onError"
-      @click="togglePlay"
-    />
+    <!-- Video container for xgplayer -->
+    <div ref="videoWrapRef" class="video-wrap" @click="onVideoClick"></div>
 
     <!-- Cover image while loading -->
     <div class="video-cover" v-if="showCover">
@@ -55,17 +40,19 @@
     <!-- Play / Pause flash indicator -->
     <Transition name="scale-fade">
       <div class="play-indicator" v-if="showPlayIndicator">
-        <span>{{ isPlaying ? '▶' : '⏸' }}</span>
+        <span>{{ indicatorText }}</span>
       </div>
     </Transition>
 
-    <!-- Bottom info gradient -->
+    <!-- Progress bar overlay -->
     <div class="bottom-overlay">
       <!-- Video info -->
       <div class="video-info">
         <div class="video-meta">
           <span class="source-badge">{{ video.sourceName || video.source }}</span>
           <span v-if="video.year" class="year-badge">{{ video.year }}</span>
+          <button class="seek-btn" @click.stop="seek(-10)">⏪ 10s</button>
+          <button class="seek-btn" @click.stop="seek(10)">10s ⏩</button>
         </div>
         <h2 class="video-title">{{ video.title }}</h2>
         <p v-if="video.desc" class="video-desc">{{ video.desc }}</p>
@@ -101,16 +88,44 @@
         </div>
       </div>
 
-      <!-- Progress bar -->
-      <div class="progress-bar-wrap" @click.stop="onProgressClick">
+      <div class="progress-bar-wrap" 
+           @click.stop="onProgressClick"
+           @mousedown="onProgressMouseDown"
+           @mousemove="onProgressMouseMove"
+           @mouseup="onProgressMouseUp"
+           @mouseleave="onProgressMouseUp"
+           @touchstart.passive="onProgressTouchStart"
+           @touchmove.passive="onProgressTouchMove"
+           @touchend.passive="onProgressTouchEnd">
+        <!-- Progress preview tooltip -->
+        <div v-if="showPreview" 
+             class="progress-preview" 
+             :style="{ left: previewPct + '%' }">
+          <div class="preview-frame">
+            <!-- Reuse xgplayer's main video or use a lightweight thumbnail if available -->
+            <div class="preview-placeholder">预览进度</div>
+          </div>
+          <span class="preview-time">{{ formatTime(previewTime) }}</span>
+        </div>
         <div class="progress-bar">
           <div class="progress-fill" :style="{ width: progressPct + '%' }" />
+        </div>
+        <div class="time-info">
+          <span>{{ formatTime(currentTime) }}</span>
+          <span class="time-sep">/</span>
+          <span>{{ formatTime(duration) }}</span>
         </div>
       </div>
     </div>
 
     <!-- Right action bar -->
     <div class="right-bar">
+      <button class="action-btn" @click.stop="togglePlaybackSpeed" title="播放倍速">
+        <span class="speed-text">{{ playbackSpeed }}x</span>
+      </button>
+      <button class="action-btn" @click.stop="toggleFullscreen" :title="isFullscreen ? '退出全屏' : '全屏'">
+        <span class="action-icon">{{ isFullscreen ? '↙️' : '↗️' }}</span>
+      </button>
       <button class="action-btn" @click.stop="playerStore.toggleMute()" :title="playerStore.isMuted ? '取消静音' : '静音'">
         <span class="action-icon">{{ playerStore.isMuted ? '🔇' : '🔊' }}</span>
       </button>
@@ -126,9 +141,11 @@
 
 <script setup>
 import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import Player, { Events } from 'xgplayer'
+import HlsPlugin from 'xgplayer-hls'
+import 'xgplayer/dist/index.min.css'
 import { usePlayerStore } from '../stores/player.js'
 import { useSourceStore } from '../stores/source.js'
-import { HlsPlayer } from '../services/hlsPlayer.js'
 import { historyService } from '../services/historyService.js'
 
 const props = defineProps({
@@ -141,129 +158,224 @@ const emit = defineEmits(['ended'])
 const playerStore = usePlayerStore()
 const sourceStore = useSourceStore()
 
-const videoRef = ref(null)
+const videoWrapRef = ref(null)
 const isPlaying = ref(false)
 const isBuffering = ref(false)
 const showCover = ref(true)
 const videoError = ref(false)
+const isFullscreen = ref(false)
+const playbackSpeed = ref(1.0)
 const progressPct = ref(0)
+const currentTime = ref(0)
+const duration = ref(0)
 const showPlayIndicator = ref(false)
 const autoSkipCountdown = ref(0)
+let player = null
 let playIndicatorTimer = null
 let autoSkipTimer = null
-let hlsPlayer = null
+let lastClickTime = 0
 
 // --- Lifecycle ---
 onMounted(() => {
-  hlsPlayer = new HlsPlayer()
-  hlsPlayer.attach(videoRef.value)
-  // Tell HLS.js which MoonTV origin to rewrite through the Vite proxy
-  if (sourceStore.moontvUrl) {
-    hlsPlayer.setMoontvOrigin(sourceStore.moontvUrl)
-  }
+  initPlayer()
 })
 
 onUnmounted(() => {
-  hlsPlayer?.destroy()
+  destroyPlayer()
   clearTimeout(playIndicatorTimer)
   clearInterval(autoSkipTimer)
 })
 
-// --- Watch active or near state ---
+function initPlayer() {
+  if (!videoWrapRef.value) return
+  
+  player = new Player({
+    el: videoWrapRef.value,
+    url: '', // Load later
+    width: '100%',
+    height: '100%',
+    autoplay: false,
+    fluid: true,
+    videoInit: true,
+    lang: 'zh-cn',
+    volume: 1,
+    muted: playerStore.isMuted,
+    loop: playerStore.isLooping,
+    playbackRate: [0.5, 0.75, 1, 1.25, 1.5, 2],
+    defaultPlaybackRate: playbackSpeed.value,
+    playsinline: true,
+    // Disable default mobile controls for TikTok-like UI
+    controls: false,
+    marginControls: false,
+    mobile: {
+      disableGesture: false,
+      gestureX: true,
+      gestureY: true,
+    },
+    plugins: [HlsPlugin],
+    // HLS config for MoonTV proxy
+    hls: {
+      xhrSetup: (xhr, requestUrl) => {
+        if (sourceStore.moontvUrl) {
+          try {
+            const moontvOrigin = new URL(sourceStore.moontvUrl).origin
+            if (requestUrl.startsWith(moontvOrigin)) {
+              const proxyUrl = '/moonapi' + requestUrl.slice(moontvOrigin.length)
+              xhr.open('GET', proxyUrl, true)
+            }
+          } catch (e) {}
+        }
+      }
+    }
+  })
+
+  player.on(Events.PLAY, () => { isPlaying.value = true; showCover.value = false; isBuffering.value = false })
+  player.on(Events.PAUSE, () => { isPlaying.value = false })
+  player.on(Events.TIME_UPDATE, () => {
+    currentTime.value = player.currentTime
+    duration.value = player.duration
+    if (player.duration > 0) {
+      progressPct.value = (player.currentTime / player.duration) * 100
+      if (props.isActive && Math.floor(player.currentTime) % 5 === 0) {
+        historyService.saveProgress(props.video, player.currentTime, player.duration)
+      }
+    }
+  })
+  player.on(Events.ENDED, () => {
+    historyService.saveProgress(props.video, player.duration, player.duration)
+    if (!playerStore.isLooping) emit('ended')
+  })
+  player.on(Events.WAITING, () => { if (props.isActive) isBuffering.value = true })
+  player.on(Events.CANPLAY, () => { isBuffering.value = false })
+  player.on(Events.ERROR, () => {
+    videoError.value = true
+    isBuffering.value = false
+    showCover.value = false
+  })
+  player.on(Events.FULLSCREEN_CHANGE, (isFs) => { isFullscreen.value = isFs })
+}
+
+function destroyPlayer() {
+  if (player) {
+    player.destroy()
+    player = null
+  }
+}
+
+// --- Watchers ---
 watch(() => [props.isActive, props.isNear], async ([active, near]) => {
   if (active || near) {
     await loadAndPlay()
   } else {
-    hlsPlayer?.pause()
+    player?.pause()
     isPlaying.value = false
   }
-}, { immediate: false })
+}, { immediate: true })
 
 watch(() => playerStore.isMuted, (muted) => {
-  if (videoRef.value) videoRef.value.muted = muted
+  if (player) player.muted = muted
+})
+
+watch(() => playerStore.isLooping, (loop) => {
+  if (player) player.loop = loop
 })
 
 // --- Methods ---
 async function loadAndPlay() {
+  if (!player) return
+  
   videoError.value = false
-  autoSkipCountdown.value = 0
-  clearInterval(autoSkipTimer)
-  
-  if (props.isActive) {
-    isBuffering.value = true
-  }
-  
+  if (props.isActive) isBuffering.value = true
   showCover.value = true
-
-  // Ensure HLS player knows about the MoonTV origin for CORS proxy
-  if (props.video.source === 'moontv' && sourceStore.moontvUrl) {
-    hlsPlayer.setMoontvOrigin(sourceStore.moontvUrl)
-  }
 
   let url = props.video.url
   if (!url && props.video.source === 'moontv') {
     url = await playerStore.resolveVideoUrl(props.video)
   }
+  
   if (!url) {
     if (props.isActive) {
       isBuffering.value = false
       videoError.value = true
-      _startAutoSkip()
     }
     return
   }
 
   try {
-    // Check if URL is still valid or need proxy refresh?
-    // In MoonTVPlus, sometimes we might want to use a proxy for certain sources.
-    // The current resolveVideoUrl and resolvePlayUrl already handle proxyMode.
+    // xgplayer handles HLS automatically if HlsPlugin is provided
+    player.switchURL(url)
     
-    await hlsPlayer.load(url, props.video.type || 'auto')
-    
-    // Resume from last position (only if active)
     if (props.isActive) {
       const progress = await historyService.getProgress(props.video.id)
       if (progress && progress.currentTime > 0 && !progress.isFinished) {
-        console.log(`[Playback] Resuming ${props.video.title} from ${progress.currentTime}s`)
-        videoRef.value.currentTime = progress.currentTime
+        player.currentTime = progress.currentTime
       }
-
-      await hlsPlayer.play()
-      isPlaying.value = true
-      showCover.value = false
-    } else {
-      // Just preload, don't play
-      hlsPlayer.pause()
+      player.play()
     }
   } catch (e) {
     console.error('Playback error:', e)
-    if (props.isActive) {
-      videoError.value = true
-      _startAutoSkip()
-    }
-  } finally {
-    if (props.isActive) {
-      isBuffering.value = false
-    }
+    if (props.isActive) videoError.value = true
   }
 }
 
-function _startAutoSkip() {
-}
-
 function togglePlay() {
-  if (!props.isActive) return
-  if (isPlaying.value) {
-    hlsPlayer.pause()
-    isPlaying.value = false
+  if (!props.isActive || !player) return
+  if (player.paused) {
+    player.play()
   } else {
-    hlsPlayer.play()
-    isPlaying.value = true
+    player.pause()
   }
   flashPlayIndicator()
 }
 
-function flashPlayIndicator() {
+function onVideoClick(e) {
+  const now = Date.now()
+  const delta = now - lastClickTime
+  if (delta < 300) {
+    // Double click
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    if (x < rect.width / 2) {
+      seek(-10)
+    } else {
+      seek(10)
+    }
+    lastClickTime = 0
+  } else {
+    lastClickTime = now
+    setTimeout(() => {
+      if (lastClickTime === now) togglePlay()
+    }, 300)
+  }
+}
+
+function seek(seconds) {
+  if (!player) return
+  player.currentTime += seconds
+  flashPlayIndicator(seconds > 0 ? '⏩' : '⏪')
+}
+
+function toggleFullscreen() {
+  if (!player) return
+  if (player.isFullscreen) {
+    player.exitFullscreen()
+  } else {
+    player.getFullscreen(player.root)
+  }
+}
+
+function togglePlaybackSpeed() {
+  const speeds = [0.5, 1.0, 1.25, 1.5, 2.0]
+  let idx = speeds.indexOf(playbackSpeed.value)
+  idx = (idx + 1) % speeds.length
+  playbackSpeed.value = speeds[idx]
+  if (player) player.playbackRate = playbackSpeed.value
+  flashPlayIndicator(`${playbackSpeed.value}x`)
+}
+
+let indicatorText = ref('▶')
+function flashPlayIndicator(text) {
+  indicatorText.value = text || (isPlaying.value ? '▶' : '⏸')
   showPlayIndicator.value = true
   clearTimeout(playIndicatorTimer)
   playIndicatorTimer = setTimeout(() => {
@@ -271,58 +383,79 @@ function flashPlayIndicator() {
   }, 800)
 }
 
-function onTimeUpdate() {
-  const dur = hlsPlayer?.duration || 0
-  const cur = hlsPlayer?.currentTime || 0
-  if (dur > 0) {
-    progressPct.value = (cur / dur) * 100
-    // Save progress periodically (every 5 seconds)
-    if (props.isActive && Math.floor(cur) % 5 === 0) {
-      historyService.saveProgress(props.video, cur, dur)
-    }
-  }
-}
-
-function onEnded() {
-  const dur = hlsPlayer?.duration || 0
-  if (dur > 0) {
-    // Mark as finished
-    historyService.saveProgress(props.video, dur, dur)
-  }
-  if (!playerStore.isLooping) {
-    emit('ended')
-  }
-}
-
-function onWaiting() {
-  if (props.isActive) isBuffering.value = true
-}
-
-function onCanPlay() {
-  isBuffering.value = false
-}
-
-function onError() {
-  videoError.value = true
-  isBuffering.value = false
-  showCover.value = false
-  _startAutoSkip()
-}
-
-function retry() {
-  videoError.value = false
-  clearInterval(autoSkipTimer)
-  autoSkipCountdown.value = 0
-  if (props.video.source === 'moontv') props.video.url = null
-  loadAndPlay()
+function formatTime(seconds) {
+  if (!seconds || isNaN(seconds)) return '00:00'
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  return h > 0 
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
 function onProgressClick(e) {
-  if (!videoRef.value) return
+  if (!player) return
   const rect = e.currentTarget.getBoundingClientRect()
   const ratio = (e.clientX - rect.left) / rect.width
-  if (videoRef.value) {
-    videoRef.value.currentTime = ratio * (hlsPlayer?.duration || 0)
+  player.currentTime = ratio * player.duration
+}
+
+const isDragging = ref(false)
+const previewTime = ref(0)
+const previewPct = ref(0)
+const showPreview = ref(false)
+
+function onProgressMouseDown(e) {
+  isDragging.value = true
+  updateProgressFromEvent(e)
+}
+
+function onProgressMouseMove(e) {
+  updatePreview(e)
+  if (isDragging.value) updateProgressFromEvent(e)
+}
+
+function onProgressMouseUp() {
+  isDragging.value = false
+  showPreview.value = false
+}
+
+function onProgressTouchStart(e) {
+  isDragging.value = true
+  showPreview.value = true
+  updateProgressFromEvent(e.touches[0])
+  updatePreview(e.touches[0])
+}
+
+function onProgressTouchMove(e) {
+  updatePreview(e.touches[0])
+  if (isDragging.value) updateProgressFromEvent(e.touches[0])
+}
+
+function onProgressTouchEnd() {
+  isDragging.value = false
+  showPreview.value = false
+}
+
+function updatePreview(e) {
+  if (!player) return
+  const rect = e.currentTarget?.getBoundingClientRect() || document.querySelector('.progress-bar-wrap').getBoundingClientRect()
+  let ratio = (e.clientX - rect.left) / rect.width
+  ratio = Math.max(0, Math.min(1, ratio))
+  previewTime.value = ratio * player.duration
+  previewPct.value = ratio * 100
+  showPreview.value = true
+}
+
+function updateProgressFromEvent(e) {
+  if (!player) return
+  const rect = document.querySelector('.progress-bar-wrap').getBoundingClientRect()
+  let ratio = (e.clientX - rect.left) / rect.width
+  ratio = Math.max(0, Math.min(1, ratio))
+  if (player.duration > 0) {
+    player.currentTime = ratio * player.duration
+    currentTime.value = player.currentTime
+    progressPct.value = ratio * 100
   }
 }
 
@@ -334,7 +467,6 @@ async function switchEpisode(idx) {
 
   let finalUrl = rawUrl
   if (rawUrl && video.source === 'moontv') {
-    // Use the MoonTV proxy/vod/m3u8 endpoint with the correct source key
     const { moontvApi } = await import('../services/moontvApi.js')
     finalUrl = await moontvApi.resolvePlayUrl(
       sourceStore.moontvUrl,
@@ -348,35 +480,21 @@ async function switchEpisode(idx) {
 
   video.currentEpisode = idx
   video.url = finalUrl
-  hlsPlayer?.destroy()
-  hlsPlayer = new HlsPlayer()
-  hlsPlayer.attach(videoRef.value)
-  // Ensure new hlsPlayer knows about MoonTV origin
-  if (sourceStore.moontvUrl) {
-    hlsPlayer.setMoontvOrigin(sourceStore.moontvUrl)
-  }
   await loadAndPlay()
 }
 
 async function tryAutoSwitchSource() {
   const video = props.video
   if (!video.playbacks || video.playbacks.length <= 1) return
-  
-  let nextIdx = (video.currentPlaybackIdx || 0) + 1
-  if (nextIdx >= video.playbacks.length) {
-    nextIdx = 0 // Wrap around or stop? User might want to cycle
-  }
-  
-  if (nextIdx === (video.currentPlaybackIdx || 0)) return // Only one source or cycled back
-  
+  let nextIdx = ((video.currentPlaybackIdx || 0) + 1) % video.playbacks.length
+  if (nextIdx === (video.currentPlaybackIdx || 0)) return
   await playerStore.switchPlayback(video, nextIdx)
   await loadAndPlay()
 }
 
 async function tryManualSwitchSource(idx) {
-  const video = props.video
-  if (video.currentPlaybackIdx === idx) return
-  await playerStore.switchPlayback(video, idx)
+  if (props.video.currentPlaybackIdx === idx) return
+  await playerStore.switchPlayback(props.video, idx)
   await loadAndPlay()
 }
 
@@ -386,8 +504,13 @@ function shareVideo() {
     navigator.share({ title: props.video.title, url })
   } else {
     navigator.clipboard?.writeText(url)
-    // Toast handled by parent
   }
+}
+
+function retry() {
+  videoError.value = false
+  if (props.video.source === 'moontv') props.video.url = null
+  loadAndPlay()
 }
 </script>
 
@@ -522,6 +645,20 @@ function shareVideo() {
   border: 1px solid rgba(255,255,255,0.2);
 }
 
+.seek-btn {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: rgba(255,255,255,0.1);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.2);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.seek-btn:hover {
+  background: rgba(255,255,255,0.2);
+}
+
 .video-title {
   font-size: 17px;
   font-weight: 700;
@@ -595,20 +732,86 @@ function shareVideo() {
 
 /* Progress bar */
 .progress-bar-wrap {
-  padding: 8px 0 4px;
+  position: relative;
+  padding: 12px 0 8px;
   cursor: pointer;
 }
 .progress-bar {
-  height: 2px;
+  height: 3px;
   background: rgba(255,255,255,0.2);
-  border-radius: 1px;
+  border-radius: 2px;
   overflow: hidden;
 }
 .progress-fill {
   height: 100%;
   background: linear-gradient(90deg, #FF385C, #FF6B35);
-  border-radius: 1px;
-  transition: width 0.3s linear;
+  border-radius: 2px;
+  transition: width 0.1s linear;
+}
+
+.time-info {
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: monospace;
+  color: rgba(255,255,255,0.7);
+  letter-spacing: 0.5px;
+}
+.time-sep {
+  margin: 0 4px;
+  opacity: 0.5;
+}
+
+.progress-preview {
+  position: absolute;
+  bottom: 30px;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.9);
+  color: white;
+  padding: 4px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+  border: 1px solid rgba(255,255,255,0.2);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 100;
+}
+
+.preview-frame {
+  width: 160px;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+
+.preview-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.preview-time {
+  font-size: 12px;
+  font-family: monospace;
+  font-weight: 600;
+  padding-bottom: 2px;
+}
+
+.progress-preview::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: rgba(0,0,0,0.9);
 }
 
 /* Right action bar */
@@ -643,6 +846,13 @@ function shareVideo() {
   font-size: 20px;
   transition: transform 0.15s;
 }
+
+.speed-text {
+  font-size: 12px;
+  font-weight: 700;
+  color: white;
+}
+
 .icon-active {
   filter: drop-shadow(0 0 6px #FF385C);
 }
