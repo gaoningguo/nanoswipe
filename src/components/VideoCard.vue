@@ -4,7 +4,19 @@
     :class="{ active: isActive }"
   >
     <!-- Artplayer container -->
-    <div ref="videoWrapRef" class="video-wrap" @click="onVideoClick"></div>
+    <div 
+      ref="videoWrapRef" 
+      class="video-wrap"
+    ></div>
+    <!-- Overlay for click events -->
+    <div 
+      class="video-click-overlay" 
+      @click="onVideoClick"
+      @mousedown="onMouseDown"
+      @touchstart.passive="onTouchStart"
+      @touchmove.passive="onTouchMove"
+      @touchend="onTouchEnd"
+    ></div>
 
     <!-- Cover image while loading -->
     <div class="video-cover" v-if="showCover">
@@ -30,12 +42,7 @@
       </div>
     </Transition>
 
-    <!-- Play / Pause flash indicator -->
-    <Transition name="scale-fade">
-      <div class="play-indicator" v-if="showPlayIndicator">
-        <span>{{ indicatorText }}</span>
-      </div>
-    </Transition>
+    <!-- Play / Pause flash indicator removed - using Artplayer default state button -->
 
     <!-- Dynamic Frame Preview Bubble -->
     <div 
@@ -134,18 +141,22 @@
       .art-contextmenu {
         display: none !important;
       }
-      /* Adjust bottom control bar for immersive feel */
-      .video-card .art-controls {
-        background-image: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.3) 20%, rgba(0, 0, 0, 0.6) 100%) !important;
-        padding-bottom: env(safe-area-inset-bottom, 0px) !important;
-        z-index: 10 !important;
-      }
-      /* Ensure progress bar is visible and easy to touch */
-      .video-card .art-control-progress {
-        height: 4px !important;
-        bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
-        z-index: 15 !important;
-      }
+    /* Adjust bottom control bar for immersive feel */
+    .video-card .art-controls {
+      background-image: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.3) 20%, rgba(0, 0, 0, 0.6) 100%) !important;
+      padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+      z-index: 20 !important; /* 提升层级，确保在点击遮罩层之上 */
+    }
+    /* Ensure progress bar is visible and easy to touch */
+    .video-card .art-control-progress {
+      height: 4px !important;
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
+      z-index: 25 !important; /* 同步提升层级 */
+    }
+    /* Ensure playback state button is also clickable */
+    .video-card .art-state {
+      z-index: 21 !important;
+    }
       .video-card .art-control-progress:hover {
         height: 6px !important;
       }
@@ -177,8 +188,6 @@ const isBuffering = ref(false)
 const showCover = ref(true)
 const videoError = ref(false)
 const errorMsg = ref('')
-const playbackSpeed = ref(1.0)
-const showPlayIndicator = ref(false)
 const autoSkipCountdown = ref(0)
 const previewVideoRef = ref(null)
 const previewCanvasRef = ref(null)
@@ -188,9 +197,15 @@ const previewTime = ref(0)
 const previewPos = ref(0)
 let player = null
 let previewHls = null
-let playIndicatorTimer = null
 let autoSkipTimer = null
 let lastClickTime = 0
+let longPressTimer = null
+let isLongPressing = ref(false)
+let touchStartX = 0
+let touchStartY = 0
+let isDraggingProgress = ref(false)
+let dragStartTime = 0
+let dragStartProgress = 0
 
 // --- Lifecycle ---
 watch(() => props.video.id, () => {
@@ -207,7 +222,6 @@ onMounted(() => {
 onUnmounted(() => {
   destroyPlayer()
   destroyPreviewPlayer()
-  clearTimeout(playIndicatorTimer)
   clearInterval(autoSkipTimer)
 })
 
@@ -223,6 +237,11 @@ function initPlayer() {
     autoplay: false,
     autoSize: false,
     autoMini: false,
+    clickConfig: {
+      show: false,
+      stop: false,
+    },
+    state: true, // 启用默认的中间状态按钮（播放/暂停）
     loop: playerStore.isLooping,
     playbackRate: true,
     aspectRatio: false,
@@ -328,6 +347,12 @@ function initPlayer() {
 
   player.on('play', () => { isPlaying.value = true; showCover.value = false; isBuffering.value = false })
   player.on('pause', () => { isPlaying.value = false })
+  
+  // 同步静音状态到 store，避免切换视频时状态丢失
+  player.on('video:volumechange', () => {
+    playerStore.isMuted = player.muted
+  })
+
   player.on('video:timeupdate', () => {
     if (player.duration > 0) {
       if (props.isActive && Math.floor(player.currentTime) % 5 === 0) {
@@ -537,6 +562,70 @@ function updatePreviewFrame(time) {
   }
 }
 
+function onMouseDown(e) {
+  if (e.button !== 0) return // Only left click
+  startLongPress()
+  window.addEventListener('mouseup', stopLongPress, { once: true })
+}
+
+function onTouchStart(e) {
+  touchStartX = e.touches[0].clientX
+  touchStartY = e.touches[0].clientY
+  isDraggingProgress.value = false
+  dragStartTime = 0
+  if (player) dragStartProgress = player.currentTime
+  startLongPress()
+}
+
+function onTouchMove(e) {
+  if (isLongPressing.value) return
+  
+  const touchX = e.touches[0].clientX
+  const touchY = e.touches[0].clientY
+  const dx = touchX - touchStartX
+  const dy = touchY - touchStartY
+
+  // 如果水平位移大于垂直位移，且超过阈值，判定为进度拖动
+  if (!isDraggingProgress.value && Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy)) {
+    isDraggingProgress.value = true
+    clearTimeout(longPressTimer) // 拖动时取消长按
+  }
+
+  if (isDraggingProgress.value && player && player.duration) {
+    const scrollScale = 0.2 // 调节灵敏度
+    const newTime = Math.max(0, Math.min(player.duration, dragStartProgress + dx * scrollScale))
+    player.currentTime = newTime
+    // Use Artplayer default notice if available or skip custom indicator
+  }
+}
+
+function onTouchEnd() {
+  stopLongPress()
+  setTimeout(() => {
+    isDraggingProgress.value = false
+  }, 100)
+}
+
+function startLongPress() {
+  clearTimeout(longPressTimer)
+  longPressTimer = setTimeout(() => {
+    if (player && isPlaying.value) {
+      isLongPressing.value = true
+      player.playbackRate = 2.0
+    }
+  }, 500)
+}
+
+function stopLongPress() {
+  clearTimeout(longPressTimer)
+  if (isLongPressing.value) {
+    isLongPressing.value = false
+    if (player) {
+      player.playbackRate = 1.0
+    }
+  }
+}
+
 function formatTime(seconds) {
   if (isNaN(seconds)) return '00:00'
   const h = Math.floor(seconds / 3600)
@@ -551,12 +640,18 @@ function formatTime(seconds) {
 function togglePlay() {
   if (!props.isActive || !player) return
   player.toggle()
-  flashPlayIndicator()
 }
 
 function onVideoClick(e) {
+  if (isLongPressing.value || isDraggingProgress.value) return
   const now = Date.now()
   const delta = now - lastClickTime
+  
+  // 如果是移动端，检查是否发生了明显的位移（防止滑动时触发点击）
+  if (e.type === 'click' && e.pointerType === 'touch') {
+    // 这种情况下 e 可能不包含完整的 touch 坐标，但在 Vue event 中 e 是原生的
+  }
+
   if (delta < 300) {
     // Double click
     const rect = e.currentTarget.getBoundingClientRect()
@@ -578,18 +673,8 @@ function onVideoClick(e) {
 function seek(seconds) {
   if (!player) return
   player.currentTime += seconds
-  flashPlayIndicator(seconds > 0 ? '⏩' : '⏪')
 }
 
-let indicatorText = ref('▶')
-function flashPlayIndicator(text) {
-  indicatorText.value = text || (isPlaying.value ? '▶' : '⏸')
-  showPlayIndicator.value = true
-  clearTimeout(playIndicatorTimer)
-  playIndicatorTimer = setTimeout(() => {
-    showPlayIndicator.value = false
-  }, 800)
-}
 
 async function switchEpisode(idx) {
   const video = props.video
@@ -659,6 +744,12 @@ function retry() {
   display: block;
 }
 
+.video-click-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2; /* 位于视频容器之上，但低于控制栏和错误层 */
+}
+
 .video-cover {
   position: absolute;
   inset: 0;
@@ -705,21 +796,6 @@ function retry() {
 }
 .retry-btn { min-width: 80px; }
 
-/* Play indicator */
-.play-indicator {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-.play-indicator span {
-  font-size: 72px;
-  opacity: 0.8;
-  filter: drop-shadow(0 0 20px rgba(0,0,0,0.5));
-}
 
 /* Bottom overlay */
 .bottom-overlay {
@@ -1011,8 +1087,4 @@ function retry() {
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-.scale-fade-enter-active { transition: all 0.15s var(--ease-spring); }
-.scale-fade-leave-active { transition: all 0.3s ease; }
-.scale-fade-enter-from { transform: scale(0.5); opacity: 0; }
-.scale-fade-leave-to { transform: scale(1.3); opacity: 0; }
 </style>
