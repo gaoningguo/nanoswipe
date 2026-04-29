@@ -231,12 +231,11 @@ function initPlayer() {
   player = new Artplayer({
     container: videoWrapRef.value,
     url: '', // Load later
-    volume: 1,
-    isLive: false,
-    muted: playerStore.isMuted,
-    autoplay: false,
+    autoplay: true,
     autoSize: false,
     autoMini: false,
+    muted: playerStore.isMuted,
+    lockTime: 0.1, // 增加一个小延迟，有时能帮助移动端更好的初始化
     clickConfig: {
       show: false,
       stop: false,
@@ -345,12 +344,19 @@ function initPlayer() {
     }
   })
 
-  player.on('play', () => { isPlaying.value = true; showCover.value = false; isBuffering.value = false })
-  player.on('pause', () => { isPlaying.value = false })
-  
   // 同步静音状态到 store，避免切换视频时状态丢失
   player.on('video:volumechange', () => {
     playerStore.isMuted = player.muted
+  })
+
+  // 监听播放状态，确保 isPlaying 响应式变量准确
+  player.on('play', () => { 
+    isPlaying.value = true
+    showCover.value = false
+    isBuffering.value = false
+  })
+  player.on('pause', () => { 
+    isPlaying.value = false 
   })
 
   player.on('video:timeupdate', () => {
@@ -475,7 +481,13 @@ async function loadAndPlay() {
       if (progress && progress.currentTime > 0 && !progress.isFinished) {
         player.currentTime = progress.currentTime
       }
-      player.play()
+      // 确保静音状态与 store 同步，这有助于绕过自动播放限制
+      player.muted = playerStore.isMuted
+      player.play().catch(err => {
+        console.warn('Autoplay failed, user interaction might be needed:', err)
+      })
+    } else if (props.isNear) {
+      player.pause()
     }
   } catch (e) {
     console.error('Playback error:', e)
@@ -574,6 +586,12 @@ function onTouchStart(e) {
   isDraggingProgress.value = false
   dragStartTime = 0
   if (player) dragStartProgress = player.currentTime
+  
+  // 如果当前是激活状态且未播放，尝试播放（处理滑动后的播放行为）
+  if (props.isActive && player && !isPlaying.value) {
+    player.play().catch(() => {})
+  }
+  
   startLongPress()
 }
 
@@ -592,10 +610,13 @@ function onTouchMove(e) {
   }
 
   if (isDraggingProgress.value && player && player.duration) {
+    if (e.cancelable) e.preventDefault() // 只有在可取消时才调用
     const scrollScale = 0.2 // 调节灵敏度
     const newTime = Math.max(0, Math.min(player.duration, dragStartProgress + dx * scrollScale))
     player.currentTime = newTime
-    // Use Artplayer default notice if available or skip custom indicator
+    
+    // 显示简单的进度提示（复用 Artplayer 的通知机制或后续添加 UI）
+    player.notice.show = `${dx > 0 ? '▶▶' : '◀◀'} ${formatTime(newTime)} / ${formatTime(player.duration)}`
   }
 }
 
@@ -747,7 +768,13 @@ function retry() {
 .video-click-overlay {
   position: absolute;
   inset: 0;
-  z-index: 2; /* 位于视频容器之上，但低于控制栏和错误层 */
+  z-index: 2; /* 位于视频容器之上 */
+  /* 确保这个层能捕获到触摸事件，同时不影响下层的控制条交互（控制条 z-index 已调高） */
+}
+
+/* 覆盖 Artplayer 的默认手势层，防止冲突 */
+:deep(.art-mask) {
+  z-index: 1 !important;
 }
 
 .video-cover {

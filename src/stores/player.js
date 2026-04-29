@@ -10,6 +10,8 @@ export const usePlayerStore = defineStore('player', () => {
   const queue = ref([])           // video queue
   const currentIndex = ref(0)
   const loading = ref(false)
+  const loadingMore = ref(false)  // lock for appending more
+  const recommendPage = ref(1)    // track page
   const error = ref(null)
   const isMuted = ref(true)       // start muted for autoplay policy
   const isLooping = ref(false)
@@ -23,12 +25,13 @@ export const usePlayerStore = defineStore('player', () => {
   async function loadInitialQueue() {
     loading.value = true
     error.value = null
+    recommendPage.value = 1
     try {
       if (sourceStore.activeSource === 'custom') {
         queue.value = [...sourceStore.customVideos]
         currentIndex.value = 0
       } else if (sourceStore.activeSource === 'moontv') {
-        await loadMoontvRecommend()
+        await loadMoontvRecommend(1)
       }
     } catch (e) {
       error.value = e.message || '加载失败'
@@ -38,12 +41,24 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function loadMoontvRecommend(page = 1) {
-    let results = await moontvApi.recommend(sourceStore.moontvUrl, sourceStore.moontvToken, page)
+    let results = []
+    try {
+      results = await moontvApi.recommend(sourceStore.moontvUrl, sourceStore.moontvToken, page)
+    } catch (e) {
+      console.error('Fetch recommend failed', e)
+      return
+    }
     
+    if (!results || results.length === 0) return
+
     // Randomize results
     results = results.sort(() => Math.random() - 0.5)
 
-    const videos = results.map(item => ({
+    // Limit to 10 items per batch as requested
+    const batchSize = 10
+    const limitedResults = results.slice(0, batchSize)
+
+    const videos = limitedResults.map(item => ({
       id: `moontv-${item.source}-${item.id}`,
       title: item.title,
       url: null,         // to be resolved on demand
@@ -67,14 +82,34 @@ export const usePlayerStore = defineStore('player', () => {
     }
 
     if (page === 1) {
-      // If randomization filtered out too many, try to load more immediately? 
-      // For now, just set what we have.
       queue.value = filteredVideos
       currentIndex.value = 0
       
-      if (queue.value.length < 5 && results.length > 0) {
-        _appendMore()
+      // If after filtering we have too few, try to take more from current results first
+      if (queue.value.length < 5 && results.length > limitedResults.length) {
+        const extraResults = results.slice(batchSize, batchSize + 20)
+        for (const item of extraResults) {
+          const v = {
+            id: `moontv-${item.source}-${item.id}`,
+            title: item.title,
+            url: null,
+            cover: item.poster || '',
+            source: 'moontv',
+            sourceName: item.source_name || 'MoonTV',
+            desc: item.desc || '',
+            year: item.year || '',
+            moontvId: item.id,
+            moontvSource: item.source,
+            type: 'hls',
+          }
+          if (!(await historyService.isFinished(v.id))) {
+            queue.value.push(v)
+          }
+        }
       }
+
+      // If still empty, we don't call _appendMore here to avoid recursion.
+      // The user can try refreshing or it will happen on next swipe if possible.
       _preloadNextUrl()
     } else {
       queue.value.push(...filteredVideos)
@@ -84,8 +119,9 @@ export const usePlayerStore = defineStore('player', () => {
   function next() {
     if (currentIndex.value < queue.value.length - 1) {
       currentIndex.value++
-      // Preload more when near end
-      if (currentIndex.value >= queue.value.length - 3) {
+      // Preload more when near end (e.g., 2 items left)
+      // Since batches are small (10), 5 might trigger it too early and too often
+      if (currentIndex.value >= queue.value.length - 2) {
         _appendMore()
       }
       // Pre-resolve next video's URL
@@ -282,9 +318,15 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function _appendMore() {
-    if (sourceStore.activeSource !== 'moontv') return
-    const page = Math.ceil(queue.value.length / 20) + 1
-    await loadMoontvRecommend(page)
+    if (sourceStore.activeSource !== 'moontv' || loadingMore.value) return
+    
+    loadingMore.value = true
+    try {
+      recommendPage.value++
+      await loadMoontvRecommend(recommendPage.value)
+    } finally {
+      loadingMore.value = false
+    }
   }
 
   async function switchPlayback(video, playbackIdx) {
