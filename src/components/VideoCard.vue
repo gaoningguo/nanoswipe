@@ -237,10 +237,10 @@ function initPlayer() {
   player = new Artplayer({
     container: videoWrapRef.value,
     url: '', // Load later
-    autoplay: true,
+    autoplay: props.isActive,
     autoSize: false,
     autoMini: false,
-    muted: playerStore.isMuted,
+    muted: props.isActive ? playerStore.isMuted : true,
     lockTime: 0.1, // 增加一个小延迟，有时能帮助移动端更好的初始化
     clickConfig: {
       show: false,
@@ -352,7 +352,9 @@ function initPlayer() {
 
   // 同步静音状态到 store，避免切换视频时状态丢失
   player.on('video:volumechange', () => {
-    playerStore.isMuted = player.muted
+    if (props.isActive) {
+      playerStore.isMuted = player.muted
+    }
   })
 
   // 监听播放状态，确保 isPlaying 响应式变量准确
@@ -426,27 +428,31 @@ function destroyPreviewPlayer() {
 // --- Watchers ---
 watch(() => [props.isActive, props.isNear], async ([active, near], [oldActive, oldNear]) => {
   if (active) {
-    // 如果是从非 active 变 active，或者是初始加载
     if (!oldActive) {
       await loadAndPlay()
     } else {
-      player?.play()
+      if (player) {
+        player.muted = playerStore.isMuted
+        player.play().catch(() => {})
+      }
     }
-  } else if (near) {
-    // 预加载逻辑
-    if (!player) {
+  } else {
+    // 只要不是 active，就必须暂停和静音（保险起见）
+    if (player) {
+      player.pause()
+      player.muted = true
+    }
+    isPlaying.value = false
+    
+    // 如果是预加载，但之前没加载过
+    if (near && !player && !oldNear) {
       await loadAndPlay()
     }
-    player?.pause()
-  } else {
-    // 离得远了就释放部分资源（或者直接暂停）
-    player?.pause()
-    isPlaying.value = false
   }
 }, { immediate: true })
 
 watch(() => playerStore.isMuted, (muted) => {
-  if (player) player.muted = muted
+  if (player && props.isActive) player.muted = muted
 })
 
 watch(() => playerStore.isLooping, (loop) => {
@@ -487,25 +493,26 @@ async function loadAndPlay() {
     initPreviewPlayer(url)
     
     if (props.isActive) {
-      // 确保静音状态与 store 同步，这有助于绕过自动播放限制
+      // 确保静音状态与 store 同步
       player.muted = playerStore.isMuted
       
-      // 监听一次 ready 事件来设置进度，确保在视频加载后跳转
+      // 监听一次 ready 事件来设置进度
       const progressHandler = async () => {
         const progress = await historyService.getProgress(props.video.id)
         if (progress && progress.currentTime > 0 && !progress.isFinished) {
-          console.log(`[History] Restoring progress for ${props.video.id}: ${progress.currentTime}`)
           player.currentTime = progress.currentTime
           player.notice.show = `已为您续播到 ${formatTime(progress.currentTime)}`
         }
       }
       player.once('ready', progressHandler)
-      player.once('video:canplay', progressHandler) // 双重保险
+      player.once('video:canplay', progressHandler)
 
       player.play().catch(err => {
-        console.warn('Autoplay failed, user interaction might be needed:', err)
+        console.warn('Autoplay failed:', err)
       })
-    } else if (props.isNear) {
+    } else {
+      // 非激活视频（预加载视频）必须静音并暂停
+      player.muted = true
       player.pause()
     }
   } catch (e) {
