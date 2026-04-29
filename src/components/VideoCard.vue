@@ -367,7 +367,11 @@ function initPlayer() {
 
   player.on('video:timeupdate', () => {
     if (player.duration > 0) {
-      if (props.isActive && Math.floor(player.currentTime) % 5 === 0) {
+      // 降低保存频率，每 2 秒尝试保存一次
+      const current = Math.floor(player.currentTime)
+      // 使用变量记录上次保存的时间点，避免一秒内多次触发
+      if (props.isActive && current > 0 && current % 2 === 0 && player._lastSaveTime !== current) {
+        player._lastSaveTime = current
         historyService.saveProgress(props.video, player.currentTime, player.duration)
       }
     }
@@ -483,12 +487,21 @@ async function loadAndPlay() {
     initPreviewPlayer(url)
     
     if (props.isActive) {
-      const progress = await historyService.getProgress(props.video.id)
-      if (progress && progress.currentTime > 0 && !progress.isFinished) {
-        player.currentTime = progress.currentTime
-      }
       // 确保静音状态与 store 同步，这有助于绕过自动播放限制
       player.muted = playerStore.isMuted
+      
+      // 监听一次 ready 事件来设置进度，确保在视频加载后跳转
+      const progressHandler = async () => {
+        const progress = await historyService.getProgress(props.video.id)
+        if (progress && progress.currentTime > 0 && !progress.isFinished) {
+          console.log(`[History] Restoring progress for ${props.video.id}: ${progress.currentTime}`)
+          player.currentTime = progress.currentTime
+          player.notice.show = `已为您续播到 ${formatTime(progress.currentTime)}`
+        }
+      }
+      player.once('ready', progressHandler)
+      player.once('video:canplay', progressHandler) // 双重保险
+
       player.play().catch(err => {
         console.warn('Autoplay failed, user interaction might be needed:', err)
       })
