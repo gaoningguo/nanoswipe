@@ -7,24 +7,24 @@
     @touchend="onTouchEnd"
     @wheel.passive="onWheel"
   >
-    <!-- Rendered windows: prev, current, next -->
+    <!-- Infinite Track: renders items at their actual positions -->
     <div
       class="swipe-track"
       :style="trackStyle"
     >
       <div
-        v-for="(video, slotIdx) in renderedSlots"
-        :key="video?.id || slotIdx"
+        v-for="(video, index) in playerStore.queue"
+        :key="video.id"
         class="swipe-slot"
       >
         <VideoCard
-          v-if="video"
+          v-if="Math.abs(index - playerStore.currentIndex) <= 1"
           :video="video"
-          :isActive="slotIdx === 1"
-          :isNear="slotIdx === 0 || slotIdx === 2"
+          :isActive="index === playerStore.currentIndex"
+          :isNear="Math.abs(index - playerStore.currentIndex) === 1"
           @ended="onVideoEnded"
         />
-        <div v-else class="swipe-slot-empty" />
+        <div v-else class="swipe-slot-placeholder" />
       </div>
     </div>
 
@@ -61,26 +61,16 @@ let wheelThrottle = false
 const SWIPE_THRESHOLD = 60     // px to trigger switch
 const VELOCITY_THRESHOLD = 0.3  // px/ms
 
-// Track style: translate based on current slot + drag
+// Track style: translate based on current index + drag
 const trackStyle = computed(() => {
-  const base = -containerHeight.value  // slot 1 (index=1) is center
+  const base = -playerStore.currentIndex * containerHeight.value
   const offset = isDragging.value ? dragOffset.value : 0
   return {
-    transform: `translateY(${base + offset}px)`,
-    transition: isDragging.value || isAnimating.value === false ? 'none' : 'transform 0.32s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+    transform: `translate3d(0, ${base + offset}px, 0)`,
+    transition: isDragging.value || isAnimating.value === false ? 'none' : 'transform 0.4s cubic-bezier(0.15, 0.3, 0.25, 1)',
   }
 })
 
-// Render 3 slots: prev, current, next
-const renderedSlots = computed(() => {
-  const q = playerStore.queue
-  const idx = playerStore.currentIndex
-  return [
-    idx > 0 ? q[idx - 1] : null,
-    q[idx] || null,
-    idx < q.length - 1 ? q[idx + 1] : null,
-  ]
-})
 
 // --- Touch Events ---
 function onTouchStart(e) {
@@ -125,11 +115,31 @@ function onWheel(e) {
 }
 
 function commit(dir) {
-  dragOffset.value = 0
+  if (isAnimating.value) return
+  
+  const hasNext = playerStore.currentIndex < playerStore.queue.length - 1
+  const hasPrev = playerStore.currentIndex > 0
+  
+  if (dir === 'next' && !hasNext) {
+    animateReset()
+    return
+  }
+  if (dir === 'prev' && !hasPrev) {
+    animateReset()
+    return
+  }
+
   isAnimating.value = true
+  
   if (dir === 'next') playerStore.next()
   if (dir === 'prev') playerStore.prev()
-  setTimeout(() => { isAnimating.value = false }, 350)
+  
+  // Reset drag offset immediately, the CSS transition handles the smooth movement
+  dragOffset.value = 0
+  
+  setTimeout(() => {
+    isAnimating.value = false
+  }, 400)
 
   // Hide swipe hint
   if (showHint.value) {
@@ -141,7 +151,7 @@ function commit(dir) {
 function animateReset() {
   isAnimating.value = true
   dragOffset.value = 0
-  setTimeout(() => { isAnimating.value = false }, 350)
+  setTimeout(() => { isAnimating.value = false }, 400)
 }
 
 function onVideoEnded() {
@@ -152,16 +162,28 @@ function onVideoEnded() {
 
 // Resize
 function onResize() {
-  containerHeight.value = window.innerHeight
+  // 使用 visualViewport 获取更准确的移动端可用高度，防止工具栏干扰
+  if (window.visualViewport) {
+    containerHeight.value = window.visualViewport.height
+  } else {
+    containerHeight.value = window.innerHeight
+  }
 }
 
 onMounted(() => {
+  onResize()
   window.addEventListener('resize', onResize)
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', onResize)
+  }
   // Keyboard support
   window.addEventListener('keydown', onKeyDown)
 })
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
+  if (window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', onResize)
+  }
   window.removeEventListener('keydown', onKeyDown)
 })
 
@@ -185,17 +207,23 @@ function onKeyDown(e) {
   top: 0;
   left: 0;
   width: 100%;
+  height: 100%; /* Height will be determined by slots or set dynamically if needed, but relative positioning works best here */
   will-change: transform;
 }
 
 .swipe-slot {
   width: 100%;
-  height: 100dvh;
+  height: 100vh; /* Use vh or let it be filled by containerHeight via JS if you want perfect match */
   position: relative;
   overflow: hidden;
 }
 
-.swipe-slot-empty {
+/* Force slot height to match dynamic container height */
+.swipe-slot {
+  height: v-bind('containerHeight + "px"');
+}
+
+.swipe-slot-placeholder {
   width: 100%;
   height: 100%;
   background: #000;

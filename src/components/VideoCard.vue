@@ -104,17 +104,8 @@
       </div>
     </div>
 
-    <!-- Right action bar -->
+    <!-- Right action bar (Empty/Hidden) -->
     <div class="right-bar">
-      <button class="action-btn" @click.stop="playerStore.toggleMute()" :title="playerStore.isMuted ? '取消静音' : '静音'">
-        <span class="action-icon">{{ playerStore.isMuted ? '🔇' : '🔊' }}</span>
-      </button>
-      <button class="action-btn" @click.stop="playerStore.toggleLoop()" :title="playerStore.isLooping ? '取消循环' : '循环播放'">
-        <span class="action-icon" :class="{ 'icon-active': playerStore.isLooping }">🔁</span>
-      </button>
-      <button class="action-btn" @click.stop="shareVideo" title="分享">
-        <span class="action-icon">🔗</span>
-      </button>
     </div>
 
     <!-- Artplayer Global Styles Override -->
@@ -202,8 +193,15 @@ let autoSkipTimer = null
 let lastClickTime = 0
 
 // --- Lifecycle ---
+watch(() => props.video.id, () => {
+  loadAndPlay()
+})
+
 onMounted(() => {
   initPlayer()
+  if (props.isActive || props.isNear) {
+    loadAndPlay()
+  }
 })
 
 onUnmounted(() => {
@@ -253,9 +251,12 @@ function initPlayer() {
       },
     ],
     customType: {
-      m3u8: function (video, url) {
+      m3u8: function (video, url, art) {
         if (Hls.isSupported()) {
           const hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: true,
+            backBufferLength: 60,
             xhrSetup: (xhr, requestUrl) => {
               if (sourceStore.moontvUrl) {
                 try {
@@ -382,10 +383,22 @@ function destroyPreviewPlayer() {
 }
 
 // --- Watchers ---
-watch(() => [props.isActive, props.isNear], async ([active, near]) => {
-  if (active || near) {
-    await loadAndPlay()
+watch(() => [props.isActive, props.isNear], async ([active, near], [oldActive, oldNear]) => {
+  if (active) {
+    // 如果是从非 active 变 active，或者是初始加载
+    if (!oldActive) {
+      await loadAndPlay()
+    } else {
+      player?.play()
+    }
+  } else if (near) {
+    // 预加载逻辑
+    if (!player) {
+      await loadAndPlay()
+    }
+    player?.pause()
   } else {
+    // 离得远了就释放部分资源（或者直接暂停）
     player?.pause()
     isPlaying.value = false
   }
@@ -401,6 +414,10 @@ watch(() => playerStore.isLooping, (loop) => {
 
 // --- Methods ---
 async function loadAndPlay() {
+  // 确保 player 实例已创建，如果没创建则初始化
+  if (!player) {
+    initPlayer()
+  }
   if (!player) return
   
   videoError.value = false
@@ -456,6 +473,7 @@ async function initPreviewPlayer(url) {
     capLevelToPlayerSize: true, // 强制最低画质
     fragLoadingMaxRetry: 1,
     levelLoadingMaxRetry: 1,
+    startLevel: 0, // 初始加载最低画质
     xhrSetup: (xhr, requestUrl) => {
       if (sourceStore.moontvUrl) {
         try {
@@ -612,14 +630,6 @@ async function tryManualSwitchSource(idx) {
   await loadAndPlay()
 }
 
-function shareVideo() {
-  const url = props.video.url || window.location.href
-  if (navigator.share) {
-    navigator.share({ title: props.video.title, url })
-  } else {
-    navigator.clipboard?.writeText(url)
-  }
-}
 
 function retry() {
   videoError.value = false
