@@ -13,9 +13,11 @@
       class="video-click-overlay" 
       @click="onVideoClick"
       @mousedown="onMouseDown"
-      @touchstart.passive="onTouchStart"
-      @touchmove.passive="onTouchMove"
+      @touchstart="onTouchStart"
+      @touchmove="onTouchMove"
       @touchend="onTouchEnd"
+      @touchcancel="onTouchEnd"
+      @contextmenu.prevent
     ></div>
 
     <!-- Cover image while loading -->
@@ -204,8 +206,12 @@ let isLongPressing = ref(false)
 let touchStartX = 0
 let touchStartY = 0
 let isDraggingProgress = ref(false)
+let isDraggingVertical = ref(false)
+let verticalDragSide = ref('') // 'left' for brightness, 'right' for volume
 let dragStartTime = 0
 let dragStartProgress = 0
+let startVolume = 0
+let startBrightness = 1
 
 // --- Lifecycle ---
 watch(() => props.video.id, () => {
@@ -581,13 +587,20 @@ function onMouseDown(e) {
 }
 
 function onTouchStart(e) {
+  if (e.touches.length > 1) return
+  
   touchStartX = e.touches[0].clientX
   touchStartY = e.touches[0].clientY
   isDraggingProgress.value = false
-  dragStartTime = 0
-  if (player) dragStartProgress = player.currentTime
+  isDraggingVertical.value = false
+  dragStartTime = Date.now()
   
-  // 如果当前是激活状态且未播放，尝试播放（处理滑动后的播放行为）
+  if (player) {
+    dragStartProgress = player.currentTime
+    startVolume = player.volume
+  }
+  
+  // 如果当前是激活状态且未播放，尝试播放
   if (props.isActive && player && !isPlaying.value) {
     player.play().catch(() => {})
   }
@@ -596,45 +609,77 @@ function onTouchStart(e) {
 }
 
 function onTouchMove(e) {
-  if (isLongPressing.value) return
+  if (isLongPressing.value || e.touches.length > 1) return
   
   const touchX = e.touches[0].clientX
   const touchY = e.touches[0].clientY
   const dx = touchX - touchStartX
   const dy = touchY - touchStartY
 
-  // 如果水平位移大于垂直位移，且超过阈值，判定为进度拖动
-  if (!isDraggingProgress.value && Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy)) {
-    isDraggingProgress.value = true
-    clearTimeout(longPressTimer) // 拖动时取消长按
+  // 初始判定：判断是水平滑动还是垂直滑动
+  if (!isDraggingProgress.value && !isDraggingVertical.value) {
+    if (Math.abs(dx) > 15 || Math.abs(dy) > 15) {
+      clearTimeout(longPressTimer)
+      if (Math.abs(dx) > Math.abs(dy)) {
+        isDraggingProgress.value = true
+      } else {
+        isDraggingVertical.value = true
+        const rect = e.currentTarget.getBoundingClientRect()
+        verticalDragSide.value = touchStartX < rect.left + rect.width / 2 ? 'left' : 'right'
+      }
+    }
   }
 
   if (isDraggingProgress.value && player && player.duration) {
-    if (e.cancelable) e.preventDefault() // 只有在可取消时才调用
-    const scrollScale = 0.2 // 调节灵敏度
+    if (e.cancelable) e.preventDefault()
+    const scrollScale = 0.2
     const newTime = Math.max(0, Math.min(player.duration, dragStartProgress + dx * scrollScale))
     player.currentTime = newTime
-    
-    // 显示简单的进度提示（复用 Artplayer 的通知机制或后续添加 UI）
     player.notice.show = `${dx > 0 ? '▶▶' : '◀◀'} ${formatTime(newTime)} / ${formatTime(player.duration)}`
+  } else if (isDraggingVertical.value && player) {
+    if (e.cancelable) e.preventDefault()
+    const sensitivity = 0.005
+    const delta = -dy * sensitivity
+
+    if (verticalDragSide.value === 'right') {
+      // 音量控制 (0-1)
+      const newVolume = Math.max(0, Math.min(1, startVolume + delta))
+      player.volume = newVolume
+      player.notice.show = `音量: ${Math.round(newVolume * 100)}%`
+    } else {
+      // 亮度控制 (通过滤镜模拟)
+      // 注意：这里只是显示提示，实际亮度可以通过样式设置，但 Artplayer 自身可能没亮度 API
+      // 我们用 notice 展示，并可以考虑后续增加 filter: brightness()
+      const newBrightness = Math.max(0.1, Math.min(2, 1 + delta))
+      if (videoWrapRef.value) {
+        videoWrapRef.value.style.filter = `brightness(${newBrightness})`
+      }
+      player.notice.show = `亮度: ${Math.round(newBrightness * 100)}%`
+    }
   }
 }
 
-function onTouchEnd() {
+function onTouchEnd(e) {
   stopLongPress()
+  
+  // 如果滑动距离很小且时间短，可能是点击，交给 onVideoClick 处理
+  // 这里主要重置状态
   setTimeout(() => {
     isDraggingProgress.value = false
-  }, 100)
+    isDraggingVertical.value = false
+  }, 50)
 }
 
 function startLongPress() {
   clearTimeout(longPressTimer)
   longPressTimer = setTimeout(() => {
-    if (player && isPlaying.value) {
+    // 只有在没滑动的情况下才算长按
+    if (player && isPlaying.value && !isDraggingProgress.value && !isDraggingVertical.value) {
       isLongPressing.value = true
       player.playbackRate = 2.0
+      player.notice.show = '2.0x 倍速播放中'
     }
-  }, 500)
+  }, 600) // 略微增加长按判定时间，减少误触
 }
 
 function stopLongPress() {
@@ -643,6 +688,7 @@ function stopLongPress() {
     isLongPressing.value = false
     if (player) {
       player.playbackRate = 1.0
+      player.notice.show = '恢复正常倍速'
     }
   }
 }
@@ -664,23 +710,20 @@ function togglePlay() {
 }
 
 function onVideoClick(e) {
-  if (isLongPressing.value || isDraggingProgress.value) return
+  if (isLongPressing.value || isDraggingProgress.value || isDraggingVertical.value) return
   const now = Date.now()
   const delta = now - lastClickTime
   
-  // 如果是移动端，检查是否发生了明显的位移（防止滑动时触发点击）
-  if (e.type === 'click' && e.pointerType === 'touch') {
-    // 这种情况下 e 可能不包含完整的 touch 坐标，但在 Vue event 中 e 是原生的
-  }
-
   if (delta < 300) {
     // Double click
     const rect = e.currentTarget.getBoundingClientRect()
     const x = e.clientX - rect.left
     if (x < rect.width / 2) {
       seek(-10)
+      if (player) player.notice.show = '◀◀ 快退 10s'
     } else {
       seek(10)
+      if (player) player.notice.show = '▶▶ 快进 10s'
     }
     lastClickTime = 0
   } else {
