@@ -75,8 +75,8 @@
         <div class="video-meta">
           <span class="source-badge">{{ video.sourceName || video.source }}</span>
           <span v-if="video.year" class="year-badge">{{ video.year }}</span>
-          <button class="seek-btn" @click.stop="seek(-10)">⏪ 10s</button>
-          <button class="seek-btn" @click.stop="seek(10)">10s ⏩</button>
+<!--          <button class="seek-btn" @click.stop="seek(-10)">⏪ 10s</button>-->
+<!--          <button class="seek-btn" @click.stop="seek(10)">10s ⏩</button>-->
         </div>
         <h2 class="video-title">{{ video.title }}</h2>
         <p v-if="video.desc" class="video-desc">{{ video.desc }}</p>

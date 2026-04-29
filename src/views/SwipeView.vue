@@ -40,6 +40,14 @@
           :class="{ active: sourceStore.activeSource === 'moontv' }"
           @click="switchSource('moontv')"
         >MoonTV</button>
+        <button
+          v-if="sourceStore.activeSource === 'moontv' && playerStore.recommendContext"
+          class="pill reset-pill active"
+          @click="playerStore.resetRecommendation()"
+          title="点击重置为全品类推荐"
+        >
+          ✨ {{ playerStore.recommendContext }} ✕
+        </button>
         <span v-if="!sourceStore.moontvEnabled" class="pill-hint">
           <router-link to="/settings" class="pill-link">+ 接入 MoonTV</router-link>
         </span>
@@ -111,6 +119,9 @@ onMounted(() => {
 })
 
 async function switchSource(src) {
+  if (src !== sourceStore.activeSource) {
+    playerStore.recommendContext = null // Reset context when manually switching sources
+  }
   sourceStore.setActiveSource(src)
   await playerStore.loadInitialQueue()
 }
@@ -204,8 +215,13 @@ function reload() {
 .source-pills {
   display: flex;
   gap: 8px;
-  padding: 0 16px 10px;
+  padding: 0 16px 12px;
   align-items: center;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.source-pills::-webkit-scrollbar {
+  display: none;
 }
 .pill {
   padding: 4px 16px;
@@ -216,11 +232,28 @@ function reload() {
   color: rgba(255,255,255,0.7);
   border: 1px solid rgba(255,255,255,0.15);
   transition: all 0.2s;
+  flex-shrink: 0;
 }
 .pill.active {
   background: var(--c-grad);
   color: white;
   border-color: transparent;
+}
+.reset-pill {
+  background: rgba(255, 56, 92, 0.2);
+  color: var(--c-accent);
+  border: 1px dashed var(--c-accent);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reset-pill.active {
+  background: rgba(255, 56, 92, 0.9);
+  color: white;
+  border: 1px solid var(--c-accent);
+  box-shadow: 0 2px 8px rgba(255, 56, 92, 0.4);
+  flex-shrink: 0;
 }
 .pill-hint {
   font-size: 12px;

@@ -17,6 +17,7 @@ export const usePlayerStore = defineStore('player', () => {
   const isLooping = ref(false)
   const searchResults = ref([])
   const searchLoading = ref(false)
+  const recommendContext = ref(null) // current theme/keyword for recommendations
 
   const currentVideo = computed(() => queue.value[currentIndex.value] || null)
   const hasNext = computed(() => currentIndex.value < queue.value.length - 1)
@@ -26,6 +27,7 @@ export const usePlayerStore = defineStore('player', () => {
     loading.value = true
     error.value = null
     recommendPage.value = 1
+    // recommendContext.value = null // Don't reset context automatically to allow persistence
     try {
       if (sourceStore.activeSource === 'custom') {
         queue.value = [...sourceStore.customVideos]
@@ -43,7 +45,12 @@ export const usePlayerStore = defineStore('player', () => {
   async function loadMoontvRecommend(page = 1) {
     let results = []
     try {
-      results = await moontvApi.recommend(sourceStore.moontvUrl, sourceStore.moontvToken, page)
+      if (recommendContext.value) {
+        // Recommend based on context (keyword from last search)
+        results = await moontvApi.search(sourceStore.moontvUrl, sourceStore.moontvToken, recommendContext.value, page)
+      } else {
+        results = await moontvApi.recommend(sourceStore.moontvUrl, sourceStore.moontvToken, page)
+      }
     } catch (e) {
       console.error('Fetch recommend failed', e)
       return
@@ -237,13 +244,15 @@ export const usePlayerStore = defineStore('player', () => {
     if (!keyword.trim()) return
     searchLoading.value = true
     searchResults.value = []
+    // Store context but don't apply until user plays something
     try {
       const results = await moontvApi.search(
         sourceStore.moontvUrl,
         sourceStore.moontvToken,
         keyword
       )
-      searchResults.value = results
+      // Attach search query to results for context later
+      searchResults.value = results.map(r => ({ ...r, _searchQuery: keyword }))
     } catch (e) {
       console.error('Search failed:', e)
     } finally {
@@ -252,6 +261,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function playSearchResult(item) {
+    recommendContext.value = item._searchQuery || item.title
     const video = {
       id: `moontv-${item.source}-${item.id}`,
       title: item.title,
@@ -283,6 +293,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   async function playAllSearchResults() {
     if (searchResults.value.length === 0) return
+    recommendContext.value = searchResults.value[0]._searchQuery || ''
     const videos = searchResults.value.map(item => ({
       id: `moontv-${item.source}-${item.id}`,
       title: item.title,
@@ -315,6 +326,12 @@ export const usePlayerStore = defineStore('player', () => {
     queue.value = [...sourceStore.customVideos]
     currentIndex.value = 0
     error.value = null
+    recommendContext.value = null
+  }
+
+  async function resetRecommendation() {
+    recommendContext.value = null
+    await loadInitialQueue()
   }
 
   async function _appendMore() {
@@ -378,8 +395,10 @@ export const usePlayerStore = defineStore('player', () => {
     hasPrev,
     searchResults,
     searchLoading,
+    recommendContext,
     loadInitialQueue,
     loadCustomVideos,
+    resetRecommendation,
     next,
     prev,
     goTo,
