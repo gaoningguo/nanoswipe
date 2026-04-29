@@ -3,7 +3,7 @@
     class="video-card"
     :class="{ active: isActive }"
   >
-    <!-- Video container for xgplayer -->
+    <!-- Artplayer container -->
     <div ref="videoWrapRef" class="video-wrap" @click="onVideoClick"></div>
 
     <!-- Cover image while loading -->
@@ -12,18 +12,11 @@
       <div v-else class="cover-placeholder" />
     </div>
 
-    <!-- Loading spinner -->
-    <Transition name="fade">
-      <div class="loading-overlay" v-if="isBuffering && isActive">
-        <div class="ns-spinner" />
-      </div>
-    </Transition>
-
     <!-- Error state -->
     <Transition name="fade">
       <div class="error-overlay" v-if="videoError && isActive">
         <div class="error-icon">⚠️</div>
-        <p>视频加载失败</p>
+        <p>{{ errorMsg || '视频加载失败' }}</p>
         <p v-if="autoSkipCountdown > 0" class="skip-countdown">{{ autoSkipCountdown }}s 后自动跳过...</p>
         <div class="error-btns">
           <button class="ns-btn ns-btn-ghost retry-btn" @click="retry">重试</button>
@@ -44,7 +37,29 @@
       </div>
     </Transition>
 
-    <!-- Progress bar overlay -->
+    <!-- Dynamic Frame Preview Bubble -->
+    <div 
+      v-show="showPreview" 
+      class="progress-preview" 
+      :style="{ left: previewPos + 'px' }"
+    >
+      <div class="preview-frame">
+        <canvas ref="previewCanvasRef" class="preview-canvas"></canvas>
+        <video 
+          ref="previewVideoRef" 
+          class="preview-video-hidden" 
+          muted 
+          playsinline
+          preload="auto"
+        ></video>
+        <div v-if="isPreviewLoading" class="preview-loading">
+          <div class="mini-spinner"></div>
+        </div>
+      </div>
+      <div class="preview-time">{{ formatTime(previewTime) }}</div>
+    </div>
+
+    <!-- Progress bar overlay (Video info only) -->
     <div class="bottom-overlay">
       <!-- Video info -->
       <div class="video-info">
@@ -87,45 +102,10 @@
           </div>
         </div>
       </div>
-
-      <div class="progress-bar-wrap" 
-           @click.stop="onProgressClick"
-           @mousedown="onProgressMouseDown"
-           @mousemove="onProgressMouseMove"
-           @mouseup="onProgressMouseUp"
-           @mouseleave="onProgressMouseUp"
-           @touchstart.passive="onProgressTouchStart"
-           @touchmove.passive="onProgressTouchMove"
-           @touchend.passive="onProgressTouchEnd">
-        <!-- Progress preview tooltip -->
-        <div v-if="showPreview" 
-             class="progress-preview" 
-             :style="{ left: previewPct + '%' }">
-          <div class="preview-frame">
-            <!-- Reuse xgplayer's main video or use a lightweight thumbnail if available -->
-            <div class="preview-placeholder">预览进度</div>
-          </div>
-          <span class="preview-time">{{ formatTime(previewTime) }}</span>
-        </div>
-        <div class="progress-bar">
-          <div class="progress-fill" :style="{ width: progressPct + '%' }" />
-        </div>
-        <div class="time-info">
-          <span>{{ formatTime(currentTime) }}</span>
-          <span class="time-sep">/</span>
-          <span>{{ formatTime(duration) }}</span>
-        </div>
-      </div>
     </div>
 
     <!-- Right action bar -->
     <div class="right-bar">
-      <button class="action-btn" @click.stop="togglePlaybackSpeed" title="播放倍速">
-        <span class="speed-text">{{ playbackSpeed }}x</span>
-      </button>
-      <button class="action-btn" @click.stop="toggleFullscreen" :title="isFullscreen ? '退出全屏' : '全屏'">
-        <span class="action-icon">{{ isFullscreen ? '↙️' : '↗️' }}</span>
-      </button>
       <button class="action-btn" @click.stop="playerStore.toggleMute()" :title="playerStore.isMuted ? '取消静音' : '静音'">
         <span class="action-icon">{{ playerStore.isMuted ? '🔇' : '🔊' }}</span>
       </button>
@@ -136,14 +116,56 @@
         <span class="action-icon">🔗</span>
       </button>
     </div>
+
+    <!-- Artplayer Global Styles Override -->
+    <component is="style">
+      .video-card .artplayer-app {
+        position: absolute !important;
+        inset: 0 !important;
+        width: 100% !important;
+        height: 100% !important;
+      }
+      .video-card .art-video-player {
+        background: #000 !important;
+      }
+      .video-card .art-control-progress .art-progress-played {
+        background: linear-gradient(90deg, #FF385C, #FF6B35) !important;
+      }
+      .video-card .art-control-progress .art-progress-indicator {
+        background: #FF385C !important;
+        box-shadow: 0 0 5px #FF385C !important;
+      }
+      /* Ensure Artplayer loading spinner matches theme */
+      .video-card .art-state .art-loading svg path {
+        fill: #FF385C !important;
+      }
+      /* Hide default context menu for a cleaner look */
+      .art-contextmenu {
+        display: none !important;
+      }
+      /* Adjust bottom control bar for immersive feel */
+      .video-card .art-controls {
+        background-image: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.3) 20%, rgba(0, 0, 0, 0.6) 100%) !important;
+        padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+        z-index: 10 !important;
+      }
+      /* Ensure progress bar is visible and easy to touch */
+      .video-card .art-control-progress {
+        height: 4px !important;
+        bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
+        z-index: 15 !important;
+      }
+      .video-card .art-control-progress:hover {
+        height: 6px !important;
+      }
+    </component>
   </div>
 </template>
 
 <script setup>
 import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import Player, { Events } from 'xgplayer'
-import HlsPlugin from 'xgplayer-hls'
-import 'xgplayer/dist/index.min.css'
+import Artplayer from 'artplayer'
+import Hls from 'hls.js'
 import { usePlayerStore } from '../stores/player.js'
 import { useSourceStore } from '../stores/source.js'
 import { historyService } from '../services/historyService.js'
@@ -163,14 +185,18 @@ const isPlaying = ref(false)
 const isBuffering = ref(false)
 const showCover = ref(true)
 const videoError = ref(false)
-const isFullscreen = ref(false)
+const errorMsg = ref('')
 const playbackSpeed = ref(1.0)
-const progressPct = ref(0)
-const currentTime = ref(0)
-const duration = ref(0)
 const showPlayIndicator = ref(false)
 const autoSkipCountdown = ref(0)
+const previewVideoRef = ref(null)
+const previewCanvasRef = ref(null)
+const isPreviewLoading = ref(false)
+const showPreview = ref(false)
+const previewTime = ref(0)
+const previewPos = ref(0)
 let player = null
+let previewHls = null
 let playIndicatorTimer = null
 let autoSkipTimer = null
 let lastClickTime = 0
@@ -182,6 +208,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   destroyPlayer()
+  destroyPreviewPlayer()
   clearTimeout(playIndicatorTimer)
   clearInterval(autoSkipTimer)
 })
@@ -189,76 +216,168 @@ onUnmounted(() => {
 function initPlayer() {
   if (!videoWrapRef.value) return
   
-  player = new Player({
-    el: videoWrapRef.value,
+  player = new Artplayer({
+    container: videoWrapRef.value,
     url: '', // Load later
-    width: '100%',
-    height: '100%',
-    autoplay: false,
-    fluid: true,
-    videoInit: true,
-    lang: 'zh-cn',
     volume: 1,
+    isLive: false,
     muted: playerStore.isMuted,
+    autoplay: false,
+    autoSize: false,
+    autoMini: false,
     loop: playerStore.isLooping,
-    playbackRate: [0.5, 0.75, 1, 1.25, 1.5, 2],
-    defaultPlaybackRate: playbackSpeed.value,
-    playsinline: true,
-    // Disable default mobile controls for TikTok-like UI
-    controls: false,
-    marginControls: false,
-    mobile: {
-      disableGesture: false,
-      gestureX: true,
-      gestureY: true,
-    },
-    plugins: [HlsPlugin],
-    // HLS config for MoonTV proxy
-    hls: {
-      xhrSetup: (xhr, requestUrl) => {
-        if (sourceStore.moontvUrl) {
-          try {
-            const moontvOrigin = new URL(sourceStore.moontvUrl).origin
-            if (requestUrl.startsWith(moontvOrigin)) {
-              const proxyUrl = '/moonapi' + requestUrl.slice(moontvOrigin.length)
-              xhr.open('GET', proxyUrl, true)
+    playbackRate: true,
+    aspectRatio: false,
+    setting: true,
+    pip: true,
+    fullscreen: true,
+    fullscreenWeb: false,
+    playsInline: true,
+    controls: [
+      {
+        name: 'playbackSpeed',
+        position: 'right',
+        html: '倍速',
+        selector: [
+          { html: '0.5x', value: 0.5 },
+          { html: '0.75x', value: 0.75 },
+          { default: true, html: '1.0x', value: 1.0 },
+          { html: '1.25x', value: 1.25 },
+          { html: '1.5x', value: 1.5 },
+          { html: '2.0x', value: 2.0 },
+        ],
+        onSelect: (item) => {
+          player.playbackRate = item.value
+          return item.html
+        },
+      },
+    ],
+    customType: {
+      m3u8: function (video, url) {
+        if (Hls.isSupported()) {
+          const hls = new Hls({
+            xhrSetup: (xhr, requestUrl) => {
+              if (sourceStore.moontvUrl) {
+                try {
+                  const moontvOrigin = new URL(sourceStore.moontvUrl).origin
+                  if (requestUrl.startsWith(moontvOrigin)) {
+                    const proxyUrl = '/moonapi' + requestUrl.slice(moontvOrigin.length)
+                    xhr.open('GET', proxyUrl, true)
+                  }
+                } catch (e) {}
+              }
             }
-          } catch (e) {}
+          })
+          hls.loadSource(url)
+          hls.attachMedia(video)
+          player.on('destroy', () => hls.destroy())
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = url
+        }
+      },
+    },
+    theme: '#FF385C',
+  })
+
+  // Hook into Artplayer's progress bar for dynamic preview
+  player.on('ready', () => {
+    const progress = player.template.$progress
+    if (progress) {
+      const handleMove = (e) => {
+        if (!props.isActive || !player.duration) return
+        
+        const rect = progress.getBoundingClientRect()
+        let clientX = e.clientX
+        if (e.touches) clientX = e.touches[0].clientX
+        
+        let pos = (clientX - rect.left) / rect.width
+        pos = Math.max(0, Math.min(1, pos))
+        
+        previewTime.value = pos * player.duration
+        const cardRect = videoWrapRef.value.getBoundingClientRect()
+        let xPos = clientX - cardRect.left
+        
+        const halfWidth = 75
+        if (xPos < halfWidth) xPos = halfWidth
+        if (xPos > cardRect.width - halfWidth) xPos = cardRect.width - halfWidth
+        
+        previewPos.value = xPos
+        showPreview.value = true
+        
+        if (!window._previewSeeking) {
+          window._previewSeeking = true
+          requestAnimationFrame(() => {
+            updatePreviewFrame(previewTime.value)
+            setTimeout(() => { window._previewSeeking = false }, 50)
+          })
         }
       }
+
+      progress.addEventListener('mousemove', handleMove)
+      progress.addEventListener('mouseenter', () => { showPreview.value = true })
+      progress.addEventListener('mouseleave', () => { showPreview.value = false })
+      progress.addEventListener('touchstart', (e) => { 
+        handleMove(e)
+        showPreview.value = true 
+      }, { passive: true })
+      progress.addEventListener('touchmove', handleMove, { passive: true })
+      progress.addEventListener('touchend', () => { showPreview.value = false })
     }
   })
 
-  player.on(Events.PLAY, () => { isPlaying.value = true; showCover.value = false; isBuffering.value = false })
-  player.on(Events.PAUSE, () => { isPlaying.value = false })
-  player.on(Events.TIME_UPDATE, () => {
-    currentTime.value = player.currentTime
-    duration.value = player.duration
+  player.on('play', () => { isPlaying.value = true; showCover.value = false; isBuffering.value = false })
+  player.on('pause', () => { isPlaying.value = false })
+  player.on('video:timeupdate', () => {
     if (player.duration > 0) {
-      progressPct.value = (player.currentTime / player.duration) * 100
       if (props.isActive && Math.floor(player.currentTime) % 5 === 0) {
         historyService.saveProgress(props.video, player.currentTime, player.duration)
       }
     }
   })
-  player.on(Events.ENDED, () => {
+  player.on('video:ended', () => {
     historyService.saveProgress(props.video, player.duration, player.duration)
+    
+    // Auto play next episode if available
+    const video = props.video
+    if (video.episodeTitles?.length > 1 && typeof video.currentEpisode === 'number') {
+      const nextIdx = video.currentEpisode + 1
+      if (nextIdx < video.episodeTitles.length) {
+        switchEpisode(nextIdx)
+        return
+      }
+    }
+
     if (!playerStore.isLooping) emit('ended')
   })
-  player.on(Events.WAITING, () => { if (props.isActive) isBuffering.value = true })
-  player.on(Events.CANPLAY, () => { isBuffering.value = false })
-  player.on(Events.ERROR, () => {
+  player.on('video:waiting', () => { if (props.isActive) isBuffering.value = true })
+  player.on('video:canplay', () => { isBuffering.value = false })
+  player.on('error', (err) => {
+    console.error('[Artplayer ERROR]', err)
+    errorMsg.value = '视频加载失败'
     videoError.value = true
     isBuffering.value = false
     showCover.value = false
   })
-  player.on(Events.FULLSCREEN_CHANGE, (isFs) => { isFullscreen.value = isFs })
+
+  // TikTok style: Double click to like (or seek as before), Single click to play/pause
+  // Artplayer handles some gestures by default, let's customize
 }
 
 function destroyPlayer() {
-  if (player) {
-    player.destroy()
+  if (player && typeof player.destroy === 'function') {
+    player.destroy(true)
     player = null
+  }
+}
+
+function destroyPreviewPlayer() {
+  if (previewHls) {
+    previewHls.destroy()
+    previewHls = null
+  }
+  if (previewVideoRef.value) {
+    previewVideoRef.value.src = ''
+    previewVideoRef.value.load()
   }
 }
 
@@ -285,6 +404,7 @@ async function loadAndPlay() {
   if (!player) return
   
   videoError.value = false
+  errorMsg.value = ''
   if (props.isActive) isBuffering.value = true
   showCover.value = true
 
@@ -302,8 +422,11 @@ async function loadAndPlay() {
   }
 
   try {
-    // xgplayer handles HLS automatically if HlsPlugin is provided
-    player.switchURL(url)
+    const isHls = /\.m3u8?(\?|$)/i.test(url) || url.includes('/proxy/vod/m3u8')
+    
+    player.switch = url
+    
+    initPreviewPlayer(url)
     
     if (props.isActive) {
       const progress = await historyService.getProgress(props.video.id)
@@ -318,13 +441,98 @@ async function loadAndPlay() {
   }
 }
 
+async function initPreviewPlayer(url) {
+  destroyPreviewPlayer()
+  await nextTick()
+  if (!previewVideoRef.value) return
+
+  const isHls = /\.m3u8?(\?|$)/i.test(url) || url.includes('/proxy/vod/m3u8')
+  
+  const hlsConfig = {
+    enableWorker: true,
+    autoStartLoad: true,
+    maxBufferLength: 1,
+    maxMaxBufferLength: 2,
+    capLevelToPlayerSize: true, // 强制最低画质
+    fragLoadingMaxRetry: 1,
+    levelLoadingMaxRetry: 1,
+    xhrSetup: (xhr, requestUrl) => {
+      if (sourceStore.moontvUrl) {
+        try {
+          const moontvOrigin = new URL(sourceStore.moontvUrl).origin
+          if (requestUrl.startsWith(moontvOrigin)) {
+            const proxyUrl = '/moonapi' + requestUrl.slice(moontvOrigin.length)
+            xhr.open('GET', proxyUrl, true)
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
+  if (isHls && Hls.isSupported()) {
+    previewHls = new Hls(hlsConfig)
+    previewHls.loadSource(url)
+    previewHls.attachMedia(previewVideoRef.value)
+    
+    previewHls.on(Hls.Events.MANIFEST_PARSED, () => {
+      // 设置最低画质层
+      if (previewHls.levels.length > 0) {
+        previewHls.currentLevel = 0
+      }
+      previewVideoRef.value?.play().catch(() => {})
+    })
+  } else {
+    previewVideoRef.value.src = url
+    previewVideoRef.value.load()
+    previewVideoRef.value.play().catch(() => {})
+  }
+
+  // 监听 seeked 事件来绘制 Canvas
+  previewVideoRef.value.addEventListener('seeked', drawPreviewFrame)
+  previewVideoRef.value.addEventListener('waiting', () => { isPreviewLoading.value = true })
+  previewVideoRef.value.addEventListener('canplay', () => { isPreviewLoading.value = false })
+}
+
+function drawPreviewFrame() {
+  if (!previewVideoRef.value || !previewCanvasRef.value) return
+  const video = previewVideoRef.value
+  const canvas = previewCanvasRef.value
+  const ctx = canvas.getContext('2d', { alpha: false })
+  
+  // 设置 canvas 尺寸（保持 16:9）
+  if (canvas.width !== 320) {
+    canvas.width = 320
+    canvas.height = 180
+  }
+
+  try {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    isPreviewLoading.value = false
+  } catch (e) {}
+}
+
+function updatePreviewFrame(time) {
+  if (previewVideoRef.value && !isNaN(time)) {
+    isPreviewLoading.value = true
+    // 限制跳转频率已经在 handleMove 中处理
+    previewVideoRef.value.currentTime = time
+  }
+}
+
+function formatTime(seconds) {
+  if (isNaN(seconds)) return '00:00'
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+  }
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+}
+
 function togglePlay() {
   if (!props.isActive || !player) return
-  if (player.paused) {
-    player.play()
-  } else {
-    player.pause()
-  }
+  player.toggle()
   flashPlayIndicator()
 }
 
@@ -355,24 +563,6 @@ function seek(seconds) {
   flashPlayIndicator(seconds > 0 ? '⏩' : '⏪')
 }
 
-function toggleFullscreen() {
-  if (!player) return
-  if (player.isFullscreen) {
-    player.exitFullscreen()
-  } else {
-    player.getFullscreen(player.root)
-  }
-}
-
-function togglePlaybackSpeed() {
-  const speeds = [0.5, 1.0, 1.25, 1.5, 2.0]
-  let idx = speeds.indexOf(playbackSpeed.value)
-  idx = (idx + 1) % speeds.length
-  playbackSpeed.value = speeds[idx]
-  if (player) player.playbackRate = playbackSpeed.value
-  flashPlayIndicator(`${playbackSpeed.value}x`)
-}
-
 let indicatorText = ref('▶')
 function flashPlayIndicator(text) {
   indicatorText.value = text || (isPlaying.value ? '▶' : '⏸')
@@ -381,82 +571,6 @@ function flashPlayIndicator(text) {
   playIndicatorTimer = setTimeout(() => {
     showPlayIndicator.value = false
   }, 800)
-}
-
-function formatTime(seconds) {
-  if (!seconds || isNaN(seconds)) return '00:00'
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  const s = Math.floor(seconds % 60)
-  return h > 0 
-    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-}
-
-function onProgressClick(e) {
-  if (!player) return
-  const rect = e.currentTarget.getBoundingClientRect()
-  const ratio = (e.clientX - rect.left) / rect.width
-  player.currentTime = ratio * player.duration
-}
-
-const isDragging = ref(false)
-const previewTime = ref(0)
-const previewPct = ref(0)
-const showPreview = ref(false)
-
-function onProgressMouseDown(e) {
-  isDragging.value = true
-  updateProgressFromEvent(e)
-}
-
-function onProgressMouseMove(e) {
-  updatePreview(e)
-  if (isDragging.value) updateProgressFromEvent(e)
-}
-
-function onProgressMouseUp() {
-  isDragging.value = false
-  showPreview.value = false
-}
-
-function onProgressTouchStart(e) {
-  isDragging.value = true
-  showPreview.value = true
-  updateProgressFromEvent(e.touches[0])
-  updatePreview(e.touches[0])
-}
-
-function onProgressTouchMove(e) {
-  updatePreview(e.touches[0])
-  if (isDragging.value) updateProgressFromEvent(e.touches[0])
-}
-
-function onProgressTouchEnd() {
-  isDragging.value = false
-  showPreview.value = false
-}
-
-function updatePreview(e) {
-  if (!player) return
-  const rect = e.currentTarget?.getBoundingClientRect() || document.querySelector('.progress-bar-wrap').getBoundingClientRect()
-  let ratio = (e.clientX - rect.left) / rect.width
-  ratio = Math.max(0, Math.min(1, ratio))
-  previewTime.value = ratio * player.duration
-  previewPct.value = ratio * 100
-  showPreview.value = true
-}
-
-function updateProgressFromEvent(e) {
-  if (!player) return
-  const rect = document.querySelector('.progress-bar-wrap').getBoundingClientRect()
-  let ratio = (e.clientX - rect.left) / rect.width
-  ratio = Math.max(0, Math.min(1, ratio))
-  if (player.duration > 0) {
-    player.currentTime = ratio * player.duration
-    currentTime.value = player.currentTime
-    progressPct.value = ratio * 100
-  }
 }
 
 async function switchEpisode(idx) {
@@ -509,6 +623,7 @@ function shareVideo() {
 
 function retry() {
   videoError.value = false
+  errorMsg.value = ''
   if (props.video.source === 'moontv') props.video.url = null
   loadAndPlay()
 }
@@ -521,18 +636,17 @@ function retry() {
   height: 100%;
   background: #000;
   overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
-.video-el {
+.video-wrap {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;
-  background: #000;
+  display: block;
 }
 
 .video-cover {
@@ -553,16 +667,7 @@ function retry() {
   background: linear-gradient(135deg, #1a1a1a, #0a0a0a);
 }
 
-/* Loading */
-.loading-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0,0,0,0.3);
-}
+/* Loading removed - using Artplayer native loading */
 
 /* Error */
 .error-overlay {
@@ -614,31 +719,38 @@ function retry() {
   right: 0;
   z-index: 5;
   padding: 0 16px;
-  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-  background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.4) 60%, transparent 100%);
+  /* Add margin to avoid overlapping with player controls */
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.4) 60%, transparent 100%);
+  pointer-events: none; /* Let clicks pass through to player */
 }
 
 .video-info {
   padding-bottom: 12px;
+  pointer-events: auto; /* Re-enable for buttons/episodes */
+  max-width: 85%; /* 避免遮挡右侧操作栏 */
 }
 
 .video-meta {
   display: flex;
   gap: 8px;
   margin-bottom: 6px;
+  flex-wrap: wrap; /* 移动端支持换行 */
 }
 
 .source-badge, .year-badge {
-  padding: 2px 10px;
-  border-radius: 20px;
+  padding: 2px 8px;
+  border-radius: 4px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
 }
+
 .source-badge {
   background: linear-gradient(135deg, #FF385C, #FF6B35);
   color: white;
 }
+
 .year-badge {
   background: rgba(255,255,255,0.15);
   color: rgba(255,255,255,0.9);
@@ -655,12 +767,13 @@ function retry() {
   cursor: pointer;
   transition: background 0.2s;
 }
+
 .seek-btn:hover {
   background: rgba(255,255,255,0.2);
 }
 
 .video-title {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   color: white;
   line-height: 1.3;
@@ -673,7 +786,7 @@ function retry() {
 }
 
 .video-desc {
-  font-size: 12px;
+  font-size: 11px;
   color: rgba(255,255,255,0.7);
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -693,21 +806,26 @@ function retry() {
   flex-wrap: nowrap;
   overflow: hidden;
 }
+
 .ep-label {
-  font-size: 12px;
+  font-size: 11px;
   color: rgba(255,255,255,0.6);
   flex-shrink: 0;
 }
+
 .ep-list {
   display: flex;
   gap: 6px;
   overflow-x: auto;
   scrollbar-width: none;
   flex: 1;
+  -webkit-overflow-scrolling: touch;
 }
+
 .ep-list::-webkit-scrollbar { display: none; }
+
 .ep-btn {
-  padding: 3px 10px;
+  padding: 2px 10px;
   border-radius: 14px;
   font-size: 11px;
   font-weight: 500;
@@ -718,133 +836,155 @@ function retry() {
   transition: all 0.15s;
   flex-shrink: 0;
 }
+
 .ep-btn.active {
   background: linear-gradient(135deg, #FF385C, #FF6B35);
   color: white;
   border-color: transparent;
 }
+
 .ep-more {
-  font-size: 11px;
+  font-size: 10px;
   color: rgba(255,255,255,0.5);
   flex-shrink: 0;
   align-self: center;
 }
 
 /* Progress bar */
-.progress-bar-wrap {
-  position: relative;
-  padding: 12px 0 8px;
-  cursor: pointer;
-}
-.progress-bar {
-  height: 3px;
-  background: rgba(255,255,255,0.2);
-  border-radius: 2px;
-  overflow: hidden;
-}
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #FF385C, #FF6B35);
-  border-radius: 2px;
-  transition: width 0.1s linear;
-}
-
-.time-info {
-  display: flex;
-  align-items: center;
-  margin-top: 6px;
-  font-size: 11px;
-  font-family: monospace;
-  color: rgba(255,255,255,0.7);
-  letter-spacing: 0.5px;
-}
-.time-sep {
-  margin: 0 4px;
-  opacity: 0.5;
-}
-
 .progress-preview {
   position: absolute;
-  bottom: 30px;
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px)); /* 位于控制栏上方 */
   transform: translateX(-50%);
-  background: rgba(0,0,0,0.9);
-  color: white;
-  padding: 4px;
+  background: rgba(0, 0, 0, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 8px;
+  padding: 4px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
   pointer-events: none;
-  white-space: nowrap;
-  border: 1px solid rgba(255,255,255,0.2);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  z-index: 100;
+  z-index: 1000;
+  transition: opacity 0.2s;
 }
 
 .preview-frame {
-  width: 160px;
-  aspect-ratio: 16 / 9;
+  width: 140px; /* 移动端减小一点 */
+  aspect-ratio: 16/9;
   background: #000;
   border-radius: 4px;
   overflow: hidden;
-  border: 1px solid rgba(255,255,255,0.1);
+  position: relative;
 }
 
-.preview-video {
+.preview-canvas {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  display: block;
+}
+
+.preview-video-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.preview-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.mini-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #FF385C;
+  border-radius: 50%;
+  animation: ns-spin 0.8s linear infinite;
+}
+
+@keyframes ns-spin {
+  to { transform: rotate(360deg); }
 }
 
 .preview-time {
-  font-size: 12px;
-  font-family: monospace;
+  font-size: 11px;
   font-weight: 600;
-  padding-bottom: 2px;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
 .progress-preview::after {
   content: '';
   position: absolute;
-  top: 100%;
+  bottom: -6px;
   left: 50%;
   transform: translateX(-50%);
-  border: 6px solid transparent;
-  border-top-color: rgba(0,0,0,0.9);
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid rgba(0, 0, 0, 0.9);
 }
 
 /* Right action bar */
 .right-bar {
   position: absolute;
-  right: 12px;
-  bottom: 120px;
+  right: 8px;
+  bottom: 120px; /* 降低位置，防止被全屏/倍速菜单遮挡或离中心太远 */
   z-index: 6;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   align-items: center;
+  pointer-events: auto;
 }
 
 .action-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 48px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
-  background: rgba(0,0,0,0.4);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.15);
-  transition: transform 0.15s, background 0.15s;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.1);
+  transition: transform 0.1s;
 }
-.action-btn:hover, .action-btn:active {
-  transform: scale(1.1);
-  background: rgba(255,56,92,0.3);
+
+.action-btn:active {
+  transform: scale(0.9);
+  background: rgba(255,56,92,0.4);
 }
+
 .action-icon {
-  font-size: 20px;
-  transition: transform 0.15s;
+  font-size: 18px;
+}
+
+/* 移动端媒体查询优化 */
+@media (max-width: 600px) {
+  .right-bar {
+    right: 8px;
+    bottom: 80px;
+  }
+  .action-btn {
+    width: 40px;
+    height: 40px;
+  }
+  .video-title {
+    font-size: 15px;
+  }
+  .bottom-overlay {
+    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 .speed-text {
