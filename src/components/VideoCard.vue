@@ -69,7 +69,7 @@
     </div>
 
     <!-- Progress bar overlay (Video info only) -->
-    <div class="bottom-overlay">
+    <div class="bottom-overlay" :class="{ 'overlay-hide': !showControls }">
       <!-- Video info -->
       <div class="video-info">
         <div class="video-meta">
@@ -113,8 +113,12 @@
       </div>
     </div>
 
-    <!-- Right action bar (Empty/Hidden) -->
+    <!-- Right action bar (Buttons) -->
     <div class="right-bar">
+      <!-- Mute/Unmute toggle -->
+      <button class="action-btn" @click.stop="toggleMute">
+        <span class="action-icon">{{ playerStore.isMuted ? '🔇' : '🔊' }}</span>
+      </button>
     </div>
 
     <!-- Artplayer Global Styles Override -->
@@ -145,21 +149,35 @@
       }
     /* Adjust bottom control bar for immersive feel */
     .video-card .art-controls {
-      background-image: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.3) 20%, rgba(0, 0, 0, 0.6) 100%) !important;
+      background: none !important; /* 移除默认渐变，避免与 bottom-overlay 的渐变重合导致过暗或遮挡 */
       padding-bottom: env(safe-area-inset-bottom, 0px) !important;
       z-index: 20 !important; /* 提升层级，确保在点击遮罩层之上 */
     }
     /* Ensure progress bar is visible and easy to touch */
     .video-card .art-control-progress {
       height: 4px !important;
-      bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
+      bottom: calc(4px + env(safe-area-inset-bottom, 0px)) !important;
       z-index: 25 !important; /* 同步提升层级 */
     }
     /* Ensure playback state button is also clickable */
     .video-card .art-state {
       z-index: 21 !important;
     }
-      .video-card .art-control-progress:hover {
+    /* 强制显示控制栏和进度条，确保在播放过程中始终可见 */
+    .video-card .art-controls,
+    .video-card .art-control-progress {
+      display: flex !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+    }
+    /* Bottom overlay */
+    .video-card .bottom-overlay {
+      z-index: 30 !important;
+      display: block !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+    }
+    .video-card .art-control-progress:hover {
         height: 6px !important;
       }
     </component>
@@ -195,6 +213,7 @@ const previewVideoRef = ref(null)
 const previewCanvasRef = ref(null)
 const isPreviewLoading = ref(false)
 const showPreview = ref(false)
+const showControls = ref(true)
 const previewTime = ref(0)
 const previewPos = ref(0)
 let player = null
@@ -279,8 +298,22 @@ function initPlayer() {
         if (Hls.isSupported()) {
           const hls = new Hls({
             enableWorker: true,
-            lowLatencyMode: true,
-            backBufferLength: 60,
+            lowLatencyMode: false, // 禁用低延迟模式以换取更稳定的缓冲区
+            backBufferLength: 90, // 增加回退缓冲区，滑动更顺滑
+            maxBufferLength: 60, // 增加前向缓冲区，从 30s 提升到 60s
+            maxMaxBufferLength: 120, // 最大缓冲区增加到 120s
+            maxBufferSize: 120 * 1024 * 1024, // 限制缓冲区大小为 120MB
+            maxBufferHole: 0.5,
+            highBufferWatchdogPeriod: 1, // 更频繁的监控缓冲区空洞
+            nudgeOffset: 0.2, // 遇到卡顿时跳过更大偏移量以尝试恢复
+            nudgeMaxRetries: 10,
+            fragLoadingTimeOut: 15000, // 分片加载超时 15s
+            manifestLoadingTimeOut: 15000,
+            abrEwmaDefaultEstimate: 1000000, // 默认带宽估计调高一点，加快初始画质选择
+            appendErrorMaxRetry: 10, // 增加错误重试
+            fragLoadingMaxRetry: 5,
+            levelLoadingMaxRetry: 5,
+            manifestLoadingMaxRetry: 5,
             xhrSetup: (xhr, requestUrl) => {
               if (sourceStore.moontvUrl) {
                 try {
@@ -306,6 +339,11 @@ function initPlayer() {
 
   // Hook into Artplayer's progress bar for dynamic preview
   player.on('ready', () => {
+    // 强制执行一次静音状态检查，非激活视频必须静音
+    if (!props.isActive) {
+      player.muted = true
+      player.pause()
+    }
     const progress = player.template.$progress
     if (progress) {
       const handleMove = (e) => {
@@ -318,7 +356,8 @@ function initPlayer() {
         let pos = (clientX - rect.left) / rect.width
         pos = Math.max(0, Math.min(1, pos))
         
-        previewTime.value = pos * player.duration
+        const targetTime = pos * player.duration
+        previewTime.value = targetTime
         const cardRect = videoWrapRef.value.getBoundingClientRect()
         let xPos = clientX - cardRect.left
         
@@ -329,11 +368,14 @@ function initPlayer() {
         previewPos.value = xPos
         showPreview.value = true
         
-        if (!window._previewSeeking) {
+        // 增加防抖判定：只有在时间变化超过 0.5 秒或上次请求已完成时才发起新请求
+        const timeDiff = Math.abs(targetTime - (window._lastPreviewReqTime || 0))
+        if (!window._previewSeeking && timeDiff > 0.5) {
           window._previewSeeking = true
+          window._lastPreviewReqTime = targetTime
           requestAnimationFrame(() => {
-            updatePreviewFrame(previewTime.value)
-            setTimeout(() => { window._previewSeeking = false }, 50)
+            updatePreviewFrame(targetTime)
+            setTimeout(() => { window._previewSeeking = false }, 50) // 略微增加间隔，保护解码器
           })
         }
       }
@@ -352,8 +394,11 @@ function initPlayer() {
 
   // 同步静音状态到 store，避免切换视频时状态丢失
   player.on('video:volumechange', () => {
-    if (props.isActive) {
+    if (props.isActive && player.muted !== playerStore.isMuted) {
       playerStore.isMuted = player.muted
+      if (!player.muted && player.volume === 0) {
+        player.volume = 0.7 // 如果取消静音但音量为0，默认给个音量
+      }
     }
   })
 
@@ -395,6 +440,11 @@ function initPlayer() {
   })
   player.on('video:waiting', () => { if (props.isActive) isBuffering.value = true })
   player.on('video:canplay', () => { isBuffering.value = false })
+
+  player.on('control', (state) => {
+    showControls.value = state
+  })
+
   player.on('error', (err) => {
     console.error('[Artplayer ERROR]', err)
     errorMsg.value = '视频加载失败'
@@ -405,6 +455,18 @@ function initPlayer() {
 
   // TikTok style: Double click to like (or seek as before), Single click to play/pause
   // Artplayer handles some gestures by default, let's customize
+
+  // 监听缓冲和播放状态
+  player.on('video:waiting', () => {
+    isBuffering.value = true
+  })
+  player.on('video:playing', () => {
+    isBuffering.value = false
+    showCover.value = false
+  })
+  player.on('video:canplay', () => {
+    isBuffering.value = false
+  })
 }
 
 function destroyPlayer() {
@@ -432,20 +494,21 @@ watch(() => [props.isActive, props.isNear], async ([active, near], [oldActive, o
       await loadAndPlay()
     } else {
       if (player) {
+        // 从预加载转为激活：恢复声音设置并确保播放
         player.muted = playerStore.isMuted
         player.play().catch(() => {})
       }
     }
   } else {
-    // 只要不是 active，就必须暂停和静音（保险起见）
+    // 只要不是 active，就必须暂停和静音
     if (player) {
       player.pause()
       player.muted = true
     }
     isPlaying.value = false
     
-    // 如果是预加载，但之前没加载过
-    if (near && !player && !oldNear) {
+    // 如果进入预加载范围（isNear）且尚未加载过，则进行异步预取
+    if (near && !oldNear) {
       await loadAndPlay()
     }
   }
@@ -466,6 +529,9 @@ async function loadAndPlay() {
     initPlayer()
   }
   if (!player) return
+
+  // 确保静音状态与 store 同步
+  player.muted = playerStore.isMuted
   
   videoError.value = false
   errorMsg.value = ''
@@ -490,19 +556,38 @@ async function loadAndPlay() {
     
     player.switch = url
     
+  if (props.isActive || props.isNear) {
     initPreviewPlayer(url)
+  }
     
-    if (props.isActive) {
+  if (props.isActive) {
+      // 增加加载超时处理
+      const loadingTimeout = setTimeout(() => {
+        if (isBuffering.value && props.isActive) {
+          console.warn('Loading timeout, trying to nudge player...')
+          player.currentTime += 0.1 // 尝试微调进度以唤醒加载
+          player.play().catch(() => {})
+        }
+      }, 5000) // 缩短超时到 5s，更积极的干预
+
       // 确保静音状态与 store 同步
       player.muted = playerStore.isMuted
       
       // 监听一次 ready 事件来设置进度
       const progressHandler = async () => {
+        // 如果在加载过程中用户已经划走，则不应再播放或取消静音
+        if (!props.isActive) {
+          player.muted = true
+          player.pause()
+          return
+        }
+        clearTimeout(loadingTimeout)
         const progress = await historyService.getProgress(props.video.id)
         if (progress && progress.currentTime > 0 && !progress.isFinished) {
           player.currentTime = progress.currentTime
           player.notice.show = `已为您续播到 ${formatTime(progress.currentTime)}`
         }
+        player.play().catch(() => {})
       }
       player.once('ready', progressHandler)
       player.once('video:canplay', progressHandler)
@@ -521,6 +606,14 @@ async function loadAndPlay() {
   }
 }
 
+function toggleMute() {
+  playerStore.isMuted = !playerStore.isMuted
+  if (player) {
+    player.muted = playerStore.isMuted
+    player.notice.show = playerStore.isMuted ? '静音' : '开启声音'
+  }
+}
+
 async function initPreviewPlayer(url) {
   destroyPreviewPlayer()
   await nextTick()
@@ -531,12 +624,17 @@ async function initPreviewPlayer(url) {
   const hlsConfig = {
     enableWorker: true,
     autoStartLoad: true,
-    maxBufferLength: 1,
-    maxMaxBufferLength: 2,
-    capLevelToPlayerSize: true, // 强制最低画质
-    fragLoadingMaxRetry: 1,
-    levelLoadingMaxRetry: 1,
-    startLevel: 0, // 初始加载最低画质
+    maxBufferLength: 10, // 增加缓冲区
+    maxMaxBufferLength: 20,
+    backBufferLength: 20,
+    capLevelToPlayerSize: true,
+    fragLoadingMaxRetry: 10, // 增加预览分片重试
+    levelLoadingMaxRetry: 5,
+    fragLoadingRetryDelay: 300, 
+    fragLoadingMaxRetryTimeout: 3000,
+    manifestLoadingTimeOut: 10000,
+    fragLoadingTimeOut: 10000,
+    startLevel: 0,
     xhrSetup: (xhr, requestUrl) => {
       if (sourceStore.moontvUrl) {
         try {
@@ -560,18 +658,32 @@ async function initPreviewPlayer(url) {
       if (previewHls.levels.length > 0) {
         previewHls.currentLevel = 0
       }
-      previewVideoRef.value?.play().catch(() => {})
+      // MANIFEST_PARSED 后不要立即 play，等到第一次预览交互时再 play
+      // 但我们需要它加载数据，所以执行一次 preload
+      previewVideoRef.value.play().then(() => {
+        previewVideoRef.value.pause()
+      }).catch(() => {})
     })
   } else {
     previewVideoRef.value.src = url
     previewVideoRef.value.load()
-    previewVideoRef.value.play().catch(() => {})
+    previewVideoRef.value.play().then(() => {
+      previewVideoRef.value.pause()
+    }).catch(() => {})
   }
 
   // 监听 seeked 事件来绘制 Canvas
   previewVideoRef.value.addEventListener('seeked', drawPreviewFrame)
   previewVideoRef.value.addEventListener('waiting', () => { isPreviewLoading.value = true })
   previewVideoRef.value.addEventListener('canplay', () => { isPreviewLoading.value = false })
+  // 增加 error 监听
+  previewVideoRef.value.addEventListener('error', (e) => {
+    console.warn('Preview video error:', e)
+    // 尝试重载一次
+    if (previewHls) {
+      previewHls.recoverMediaError()
+    }
+  })
 }
 
 function drawPreviewFrame() {
@@ -594,9 +706,21 @@ function drawPreviewFrame() {
 
 function updatePreviewFrame(time) {
   if (previewVideoRef.value && !isNaN(time)) {
+    // 如果已经在目标时间附近，不要重复 seek
+    if (Math.abs(previewVideoRef.value.currentTime - time) < 0.2) return
+    
     isPreviewLoading.value = true
-    // 限制跳转频率已经在 handleMove 中处理
+    // 强制跳转
     previewVideoRef.value.currentTime = time
+    
+    // 预览视频通常应该是暂停的，我们只在 seeked 之后绘制一帧
+    // 但有些浏览器如果不 play 一下可能不会渲染新帧
+    if (previewVideoRef.value.paused) {
+      previewVideoRef.value.play().then(() => {
+        // 播放后立即暂停，只为触发帧更新
+        previewVideoRef.value.pause()
+      }).catch(() => {})
+    }
   }
 }
 
@@ -893,12 +1017,19 @@ function retry() {
   bottom: 0;
   left: 0;
   right: 0;
-  z-index: 5;
+  z-index: 30; /* 确保在 Artplayer 控制栏 (z-index 20) 之上 */
   padding: 0 16px;
   /* Add margin to avoid overlapping with player controls */
-  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(50px + env(safe-area-inset-bottom, 0px));
   background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.4) 60%, transparent 100%);
   pointer-events: none; /* Let clicks pass through to player */
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.bottom-overlay.overlay-hide {
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
 }
 
 .video-info {
@@ -1029,7 +1160,7 @@ function retry() {
 /* Progress bar */
 .progress-preview {
   position: absolute;
-  bottom: calc(20px + env(safe-area-inset-bottom, 0px)); /* 位于控制栏上方 */
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px)); /* 降低一点以贴合新进度的位置 */
   transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.2);
@@ -1159,7 +1290,7 @@ function retry() {
     font-size: 15px;
   }
   .bottom-overlay {
-    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
   }
 }
 
