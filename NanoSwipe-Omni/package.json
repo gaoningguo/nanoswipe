@@ -1,0 +1,24 @@
+{
+  "name": "nanoswipe-omni",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace apps/web",
+    "build": "npm run build --workspace apps/web",
+    "preview": "npm run preview --workspace apps/web",
+    "dev:web": "npm run dev --workspace apps/web",
+    "build:web": "npm run build --workspace apps/web",
+    "preview:web": "npm run preview --workspace apps/web",
+    "build:mobile": "npm run build --workspace apps/capacitor",
+    "cap:sync": "npm run cap:sync --workspace apps/capacitor",
+    "cap:add:android": "npm run cap:add:android --workspace apps/capacitor",
+    "cap:add:ios": "npm run cap:add:ios --workspace apps/capacitor",
+    "dev:desktop": "npm run dev --workspace apps/tauri",
+    "build:desktop": "npm run build --workspace apps/tauri"
+  }
+}
