@@ -1,7 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useSourceStore } from './source.js'
-import { historyService, moontvApi } from '@nanoswipe/shared'
+import { detectPlatform, historyService, moontvApi } from '@nanoswipe/shared'
+
+const platformContext = detectPlatform()
+const isNativeBuild = platformContext.isTauri || platformContext.isCapacitor
 
 export const usePlayerStore = defineStore('player', () => {
   const sourceStore = useSourceStore()
@@ -214,7 +217,8 @@ export const usePlayerStore = defineStore('player', () => {
           epUrl,
           video.moontvSource,
           0,
-          proxyMode
+          proxyMode,
+          isNativeBuild,
         )
         
         // Update queue item

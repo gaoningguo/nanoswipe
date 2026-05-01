@@ -18,7 +18,13 @@
     "cap:sync": "npm run cap:sync --workspace apps/capacitor",
     "cap:add:android": "npm run cap:add:android --workspace apps/capacitor",
     "cap:add:ios": "npm run cap:add:ios --workspace apps/capacitor",
+    "build:android": "npm run build:android --workspace apps/capacitor",
+    "build:ios": "npm run build:ios --workspace apps/capacitor",
     "dev:desktop": "npm run dev --workspace apps/tauri",
-    "build:desktop": "npm run build --workspace apps/tauri"
+    "build:desktop": "npm run build --workspace apps/tauri",
+    "build:windows": "npm run build --workspace apps/tauri"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
   }
 }

@@ -130,7 +130,7 @@ export const moontvApi = {
     return data
   },
 
-  async resolvePlayUrl(configuredUrl, token, playUrl, source, episodeIndex = 0, proxyMode = false) {
+  async resolvePlayUrl(configuredUrl, token, playUrl, source, episodeIndex = 0, proxyMode = false, forceProxy = false) {
     const base = resolveApiBase(configuredUrl)
 
     if (!playUrl) return ''
@@ -150,10 +150,17 @@ export const moontvApi = {
       }
     }
 
-    const isM3u8 = actualPlayUrl.toLowerCase().includes('.m3u8') || actualPlayUrl.toLowerCase().includes('.m3u')
+    const lowerUrl = actualPlayUrl.toLowerCase()
+    const isM3u8 = lowerUrl.includes('.m3u8') || lowerUrl.includes('.m3u')
+    const isAlreadyProxied = lowerUrl.includes('/api/proxy/vod/m3u8') || lowerUrl.includes('/api/proxy-m3u8')
 
-    if (isM3u8 && proxyMode) {
-      return this.buildProxyPlayUrl(configuredUrl, actualPlayUrl, source)
+    if (isM3u8 && !isAlreadyProxied) {
+      if (forceProxy) {
+        return this.buildDirectProxyPlayUrl(configuredUrl, actualPlayUrl)
+      }
+      if (proxyMode) {
+        return this.buildProxyPlayUrl(configuredUrl, actualPlayUrl, source)
+      }
     }
 
     if (actualPlayUrl.startsWith('/')) {

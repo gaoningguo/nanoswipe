@@ -8,26 +8,40 @@
     "beforeDevCommand": "npm --prefix ../.. run dev:web",
     "beforeBuildCommand": "npm --prefix ../.. run build:web",
     "devPath": "http://localhost:3333",
-    "distDir": "../web/dist",
+    "distDir": "../../web/dist",
     "withGlobalTauri": true
   },
   "tauri": {
     "windows": [
       {
         "title": "NanoSwipe Omni",
-        "width": 390,
-        "height": 844,
+        "width": 460,
+        "height": 900,
+        "minWidth": 380,
+        "minHeight": 640,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "center": true
       }
     ],
     "allowlist": {
-      "all": true
+      "all": true,
+      "http": {
+        "all": true,
+        "request": true,
+        "scope": ["http://**", "https://**"]
+      }
     },
     "bundle": {
       "active": true,
       "identifier": "com.nanoswipe.omni",
-      "targets": "all"
+      "targets": "all",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.ico"
+      ]
     }
   }
 }

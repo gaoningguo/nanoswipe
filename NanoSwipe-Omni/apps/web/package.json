@@ -11,6 +11,7 @@
   "dependencies": {
     "@capacitor/core": "^7.0.0",
     "@nanoswipe/shared": "file:../../packages/shared",
+    "@tauri-apps/api": "^1.6.0",
     "artplayer": "^5.4.0",
     "hls.js": "^1.6.16",
     "pinia": "^3.0.4",

@@ -191,7 +191,11 @@ import Hls from 'hls.js'
 import { usePlayerStore } from '../stores/player.js'
 import { useSourceStore } from '../stores/source.js'
 import { historyService } from '../services/historyService.js'
-import { makeHlsUrlRewriter, moontvApi } from '@nanoswipe/shared'
+import { detectPlatform, makeHlsUrlRewriter, moontvApi } from '@nanoswipe/shared'
+import { createHlsLoader } from '../services/hlsLoader.js'
+
+const platformContext = detectPlatform()
+const isNativeBuild = platformContext.isTauri || platformContext.isCapacitor
 
 const props = defineProps({
   video: { type: Object, required: true },
@@ -273,6 +277,12 @@ function setupMoonTvHlsRequest(xhr, requestUrl) {
     }
   }
 }
+
+const AdapterHlsLoader = createHlsLoader({
+  getMoontvUrl: () => sourceStore.moontvUrl,
+  getMoontvToken: () => sourceStore.moontvToken,
+  urlRewriter: (url) => makeHlsUrlRewriter(sourceStore.moontvUrl)(url),
+})
 
 // --- Lifecycle ---
 watch(() => props.video.id, () => {
@@ -356,10 +366,26 @@ function initPlayer() {
             fragLoadingMaxRetry: 5,
             levelLoadingMaxRetry: 5,
             manifestLoadingMaxRetry: 5,
-            xhrSetup: setupMoonTvHlsRequest
+            xhrSetup: setupMoonTvHlsRequest,
+            loader: AdapterHlsLoader,
           })
           hls.loadSource(url)
           hls.attachMedia(video)
+          hls.on(Hls.Events.ERROR, (event, data) => {
+            console.warn('[HLS error]', data?.type, data?.details, {
+              fatal: data?.fatal,
+              url: data?.url,
+              response: data?.response,
+              reason: data?.reason,
+            })
+            if (data?.fatal) {
+              if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                hls.startLoad()
+              } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                hls.recoverMediaError()
+              }
+            }
+          })
           player.on('destroy', () => hls.destroy())
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = url
@@ -670,7 +696,8 @@ async function initPreviewPlayer(url) {
     manifestLoadingTimeOut: 10000,
     fragLoadingTimeOut: 10000,
     startLevel: 0,
-    xhrSetup: setupMoonTvHlsRequest
+    xhrSetup: setupMoonTvHlsRequest,
+    loader: AdapterHlsLoader,
   }
 
   if (isHls && Hls.isSupported()) {
@@ -924,7 +951,8 @@ async function switchEpisode(idx) {
       rawUrl,
       video.moontvSource,
       idx,
-      video.proxyMode || false
+      video.proxyMode || false,
+      isNativeBuild,
     )
   }
 

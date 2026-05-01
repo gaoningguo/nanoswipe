@@ -19,11 +19,11 @@
           <div class="status-row">
             <div>
               <div class="label">连接状态</div>
-              <div class="status-val" :class="moontvConnected ? 'status-ok' : 'status-off'">
-                {{ moontvConnected ? '✓ 已连接' : '未连接' }}
+              <div class="status-val" :class="connectionStatusClass">
+                {{ connectionStatusText }}
               </div>
             </div>
-            <span class="status-dot" :class="{ connected: moontvConnected }" />
+            <span class="status-dot" :class="connectionStatusClass" />
           </div>
 
           <div class="form-group">
@@ -55,7 +55,9 @@
             >断开</button>
           </div>
 
-          <p v-if="loginError" class="error-msg">{{ loginError }}</p>
+          <p v-if="connectionMessage" class="connection-msg" :class="connectionMessageClass">
+            {{ connectionMessage }}
+          </p>
 
           <div class="tip-box">
             <p>✅ 开发模式已通过 <code>Vite 代理</code> 自动转发请求，无需配置 CORS。</p>
@@ -208,31 +210,71 @@ const moontvUrl = ref(sourceStore.moontvUrl)
 const moontvUser = ref('')
 const moontvPass = ref('')
 const loginLoading = ref(false)
-const loginError = ref('')
-const moontvConnected = ref(!!sourceStore.moontvToken)
+const connectionStatus = ref(sourceStore.moontvToken ? 'connected' : 'idle')
+const connectionMessage = ref('')
+const moontvConnected = computed(() => connectionStatus.value === 'connected')
+const connectionStatusText = computed(() => {
+  if (connectionStatus.value === 'connecting') return '连接中...'
+  if (connectionStatus.value === 'connected') return '✓ 已连接'
+  if (connectionStatus.value === 'failed') return '连接失败'
+  return '未连接'
+})
+const connectionStatusClass = computed(() => ({
+  'status-ok': connectionStatus.value === 'connected',
+  'status-off': connectionStatus.value === 'idle',
+  'status-loading': connectionStatus.value === 'connecting',
+  'status-failed': connectionStatus.value === 'failed',
+}))
+const connectionMessageClass = computed(() => ({
+  'connection-msg-ok': connectionStatus.value === 'connected',
+  'connection-msg-error': connectionStatus.value === 'failed',
+  'connection-msg-loading': connectionStatus.value === 'connecting',
+}))
+
+function withTimeout(promise, timeoutMs = 15000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('连接超时，请检查 MoonTV 实例地址或网络')), timeoutMs)
+    }),
+  ])
+}
+
+function formatMoontvError(error) {
+  const message = error?.message || String(error)
+  if (message.includes('401') || message.includes('403') || message.includes('账号')) {
+    return '账号或密码错误，请重新检查'
+  }
+  if (message.includes('timeout') || message.includes('超时')) {
+    return message
+  }
+  if (message.includes('fetch') || message.includes('Failed') || message.includes('Network')) {
+    return `网络连接失败：${message}`
+  }
+  return `连接失败：${message}`
+}
 
 async function connectMoontv() {
   if (!moontvUrl.value.trim()) {
-    loginError.value = '请输入实例地址'
+    connectionStatus.value = 'failed'
+    connectionMessage.value = '请输入实例地址'
     return
   }
+
   loginLoading.value = true
-  loginError.value = ''
+  connectionStatus.value = 'connecting'
+  connectionMessage.value = '正在连接 MoonTV，请稍候...'
+
   try {
-    const token = await moontvApi.login(moontvUrl.value, moontvUser.value, moontvPass.value)
+    const token = await withTimeout(moontvApi.login(moontvUrl.value, moontvUser.value, moontvPass.value))
     sourceStore.saveMoontvConfig(moontvUrl.value, token)
-    moontvConnected.value = true
+    connectionStatus.value = 'connected'
+    connectionMessage.value = '连接成功，MoonTV 已启用'
     moontvPass.value = ''
-    loginError.value = ''
-  } catch (e) {
-    console.error('[MoonTV login error]', e)
-    if (e.message.includes('401') || e.message.includes('403') || e.message.includes('账号')) {
-      loginError.value = '❌ 账号或密码错误，请重新检查'
-    } else if (e.message.includes('fetch') || e.message.includes('Failed')) {
-      loginError.value = '❌ 网络连接失败：请确认实例地址是否正确，以及开发服务器正在运行'
-    } else {
-      loginError.value = '❌ 连接失败：' + e.message
-    }
+  } catch (error) {
+    console.error('[MoonTV login error]', error)
+    connectionStatus.value = 'failed'
+    connectionMessage.value = formatMoontvError(error)
   } finally {
     loginLoading.value = false
   }
@@ -240,7 +282,8 @@ async function connectMoontv() {
 
 function disconnectMoontv() {
   sourceStore.clearMoontvToken()
-  moontvConnected.value = false
+  connectionStatus.value = 'idle'
+  connectionMessage.value = '已断开 MoonTV 连接'
   if (sourceStore.activeSource === 'moontv') {
     sourceStore.setActiveSource('custom')
   }
@@ -386,13 +429,22 @@ function importVideos() {
 .status-val { font-size: 13px; margin-top: 4px; }
 .status-ok { color: #4ade80; }
 .status-off { color: var(--c-text-3); }
+.status-loading { color: #60a5fa; }
+.status-failed { color: #f87171; }
 .status-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
   background: var(--c-text-3);
 }
-.status-dot.connected { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+.status-dot.status-ok { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+.status-dot.status-loading { background: #60a5fa; animation: pulse-dot 0.9s ease-in-out infinite; }
+.status-dot.status-failed { background: #f87171; box-shadow: 0 0 8px rgba(248,113,113,0.75); }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.45; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.25); }
+}
 
 .form-group {
   display: flex;
@@ -413,11 +465,14 @@ function importVideos() {
 }
 .disconnect-btn { flex-shrink: 0; }
 
-.error-msg {
+.connection-msg {
   font-size: 13px;
-  color: #f87171;
   margin-top: -4px;
+  line-height: 1.5;
 }
+.connection-msg-ok { color: #4ade80; }
+.connection-msg-error { color: #f87171; }
+.connection-msg-loading { color: #60a5fa; }
 
 .tip-box {
   background: rgba(255,56,92,0.08);
